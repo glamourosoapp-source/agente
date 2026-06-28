@@ -1,0 +1,33 @@
+{
+  "name": "glamouroso-agent",
+  "version": "1.0.0",
+  "description": "Agente conversacional de ventas para CRM Glamouroso (productos, pedidos, cotizaciones, FAQs y prospeccion) construido con el framework eve de Vercel.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "eve dev",
+    "build": "eve build",
+    "start": "eve start",
+    "info": "eve info",
+    "eval": "eve eval",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@ai-sdk/gateway": "^3.0.133",
+    "@upstash/redis": "^1.38.0",
+    "ai": "^7.0.0-beta.178",
+    "eve": "^0.11.4",
+    "postgres": "^3.4.9",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "typescript": "^6.0.3"
+  }
+}
