@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
 import { convertQuoteToOrder } from "../lib/ops/quotes.js";
+import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
 
 /**
@@ -20,7 +21,10 @@ export default defineTool({
   }),
   async execute(input, ctx) {
     const tenant = getTenant(ctx);
-    const result = await convertQuoteToOrder(tenant, input);
+    const result = await convertQuoteToOrder(tenant, {
+      ...input,
+      idempotencyKey: orderIdempotencyKey(ctx, input),
+    });
     if (!result.ok) {
       return { ok: false, needsAddress: result.needsAddress ?? false, message: result.message };
     }

@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
 import { createOrder } from "../lib/ops/orders.js";
+import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
 
 const itemSchema = z.object({
@@ -19,9 +20,11 @@ const itemSchema = z.object({
 export default defineTool({
   description:
     "Crea el pedido en el CRM. LLAMALA SOLO despues de que el cliente confirme " +
-    "explicitamente el resumen de prepare_order. Si falta direccion devuelve " +
-    "needsAddress: pidela y no insistas en crear. Tras crearlo, dale al cliente " +
-    "el numero de pedido.",
+    "explicitamente el resumen de prepare_order y de conocer su forma de pago " +
+    "(efectivo o transferencia). Si falta direccion devuelve needsAddress: pidela " +
+    "y no insistas en crear. Si un producto se agoto devuelve unavailable. Tras " +
+    "crearlo, dale al cliente el numero de pedido; si paga por transferencia, " +
+    "pidele el comprobante (se registra con process_document).",
   inputSchema: z.object({
     items: z.array(itemSchema).min(1).describe("Productos confirmados del pedido."),
     deliveryAddress: z.string().optional().describe("Direccion de entrega (si se dio en el chat)."),
@@ -32,18 +35,35 @@ export default defineTool({
       .describe("Id de ubicacion guardada confirmada por el cliente."),
     contactName: z.string().optional().describe("Nombre del cliente si lo proporciono."),
     customerNotes: z.string().optional().describe("Notas del cliente para el pedido (opcional)."),
-    deliveryFee: z.number().min(0).optional(),
+    paymentMethod: z
+      .enum(["efectivo", "transferencia"])
+      .optional()
+      .describe("Forma de pago acordada con el cliente (efectivo o transferencia)."),
+    deliveryFee: z
+      .number()
+      .min(0)
+      .optional()
+      .describe("Costo de envio SOLO para casos especiales; normalmente se calcula solo."),
     discount: z.number().min(0).optional(),
   }),
   async execute(input, ctx) {
     const tenant = getTenant(ctx);
-    const result = await createOrder(tenant, input);
+    const result = await createOrder(tenant, {
+      ...input,
+      idempotencyKey: orderIdempotencyKey(ctx, input),
+    });
     if (!result.ok) {
-      return { ok: false, needsAddress: result.needsAddress ?? false, message: result.message };
+      return {
+        ok: false,
+        needsAddress: result.needsAddress ?? false,
+        unavailable: result.unavailable,
+        message: result.message,
+      };
     }
 
     // Notifica al Back para realtime + notificacion en el Dashboard (best-effort).
-    await syncOrderCreated(tenant.organizationId, result.order.id);
+    // En un re-run el pedido ya existia; el Back ya fue notificado.
+    if (!result.replayed) await syncOrderCreated(tenant.organizationId, result.order.id);
 
     return {
       ok: true,

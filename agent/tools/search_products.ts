@@ -10,8 +10,12 @@ import { searchProducts } from "../lib/ops/products.js";
 export default defineTool({
   description:
     "Busca productos en el catalogo de la organizacion por nombre, descripcion o " +
-    "SKU. Devuelve nombre, precio, unidad y disponibilidad. USALA SIEMPRE antes " +
-    "de armar un pedido o dar precios; no inventes productos ni precios.",
+    "SKU. Devuelve nombre, precio, unidad, disponibilidad y la descripcion real " +
+    "del producto. USALA SIEMPRE antes de armar un pedido o dar precios; no " +
+    "inventes productos, precios ni para que sirve un producto: si vas a decir " +
+    "para que sirve o a que producto se parece, basate SOLO en el campo " +
+    "`description` devuelto (si viene null, no lo inventes ni lo asumas por el " +
+    "nombre).",
   inputSchema: z.object({
     query: z.string().min(1).describe("Texto a buscar (nombre o tipo de producto)."),
     limit: z.number().int().min(1).max(25).optional().describe("Maximo de resultados (default 8)."),
@@ -30,6 +34,7 @@ export default defineTool({
         price: p.price,
         wholesalePrice: p.wholesalePrice,
         available: p.isAvailable && p.stock > 0,
+        description: p.description,
       })),
       note:
         products.length === 0

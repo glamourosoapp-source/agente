@@ -16,10 +16,13 @@ const itemSchema = z.object({
  */
 export default defineTool({
   description:
-    "Arma el resumen del pedido (items, precios, subtotal y total) SIN crearlo. " +
-    "Usala despues de search_products y antes de confirm_order. Si el cliente no " +
-    "tiene direccion guardada y no la pasas, devuelve needsAddress: pidela antes " +
-    "de continuar. Muestra el resumen al cliente y pide su confirmacion explicita.",
+    "Arma el resumen del pedido (items, precios, subtotal, envio y total) SIN " +
+    "crearlo. Usala despues de search_products y antes de confirm_order. Si el " +
+    "cliente no tiene direccion guardada y no la pasas, devuelve needsAddress: " +
+    "pidela antes de continuar. Si algun producto esta agotado devuelve " +
+    "unavailable: avisa al cliente y ofrece alternativas. El costo de envio se " +
+    "calcula solo (gratis desde el minimo del negocio). Muestra el resumen al " +
+    "cliente y pide su confirmacion explicita.",
   inputSchema: z.object({
     items: z.array(itemSchema).min(1).describe("Productos del pedido."),
     deliveryAddress: z
@@ -32,7 +35,15 @@ export default defineTool({
       .optional()
       .describe("Id de una ubicacion guardada del cliente (de list_customer_locations)."),
     contactName: z.string().optional().describe("Nombre del cliente si lo proporciona."),
-    deliveryFee: z.number().min(0).optional().describe("Costo de envio (opcional)."),
+    paymentMethod: z
+      .enum(["efectivo", "transferencia"])
+      .optional()
+      .describe("Forma de pago si el cliente ya la indico (efectivo o transferencia)."),
+    deliveryFee: z
+      .number()
+      .min(0)
+      .optional()
+      .describe("Costo de envio SOLO para casos especiales; normalmente se calcula solo."),
     discount: z.number().min(0).optional().describe("Descuento aplicado (opcional)."),
   }),
   async execute(input, ctx) {
@@ -42,6 +53,7 @@ export default defineTool({
       return {
         ok: false,
         needsAddress: result.needsAddress ?? false,
+        unavailable: result.unavailable,
         message: result.message,
       };
     }
@@ -49,8 +61,11 @@ export default defineTool({
       ok: true,
       customer: result.customer,
       deliveryAddress: result.deliveryAddress,
+      paymentMethod: result.paymentMethod,
       summary: result.summary,
-      note: "Muestra este resumen al cliente y pide confirmacion antes de llamar confirm_order.",
+      note:
+        "Muestra este resumen al cliente (incluye el envio). Antes de confirm_order, " +
+        "pregunta la forma de pago (efectivo o transferencia) si aun no la sabes.",
     };
   },
 });

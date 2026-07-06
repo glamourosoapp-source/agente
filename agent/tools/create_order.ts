@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
 import { createOrder } from "../lib/ops/orders.js";
+import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
 
 const itemSchema = z.object({
@@ -27,16 +28,26 @@ export default defineTool({
     locationId: z.string().uuid().optional(),
     contactName: z.string().optional(),
     customerNotes: z.string().optional(),
+    paymentMethod: z.enum(["efectivo", "transferencia"]).optional(),
     deliveryFee: z.number().min(0).optional(),
     discount: z.number().min(0).optional(),
   }),
   async execute(input, ctx) {
     const tenant = getTenant(ctx);
-    const result = await createOrder(tenant, input);
+    const result = await createOrder(tenant, {
+      ...input,
+      idempotencyKey: orderIdempotencyKey(ctx, input),
+    });
     if (!result.ok) {
-      return { ok: false, needsAddress: result.needsAddress ?? false, message: result.message };
+      return {
+        ok: false,
+        needsAddress: result.needsAddress ?? false,
+        unavailable: result.unavailable,
+        message: result.message,
+      };
     }
-    await syncOrderCreated(tenant.organizationId, result.order.id);
+    // En un re-run el pedido ya existia; el Back ya fue notificado.
+    if (!result.replayed) await syncOrderCreated(tenant.organizationId, result.order.id);
     return {
       ok: true,
       order: {

@@ -1,6 +1,8 @@
-import { MAX_CUSTOMER_LOCATIONS } from "@glamouroso/shared/constants";
-import { extractGoogleMapsUrls } from "@glamouroso/shared/utils/google-maps-url";
+import { extractGoogleMapsUrls } from "../google-maps-url.js";
 import { getSql } from "../db.js";
+
+/** Maximo de ubicaciones guardadas por cliente (espejo de shared/constants.ts del Back). */
+const MAX_CUSTOMER_LOCATIONS = 3;
 import type { TenantContext } from "../tenant.js";
 import {
   findOrCreateCustomerByPhone,

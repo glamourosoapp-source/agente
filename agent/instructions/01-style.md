@@ -1,8 +1,3 @@
----
-name: conversation-replies
-description: Estilo y formato de las respuestas de WhatsApp.
----
-
 # Estilo de respuestas (WhatsApp)
 
 - Español de México, cálido y cercano. Tutea salvo que pidan lo contrario.

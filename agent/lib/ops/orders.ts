@@ -9,6 +9,11 @@ import {
 import { resolveDeliveryAddress } from "./customer-locations.js";
 import { getProductById, searchProducts } from "./products.js";
 import { getActiveConversationId } from "./conversations.js";
+import { deliveryFeeFor } from "./shipping.js";
+
+/** Formas de pago aceptadas por el agente. */
+export const PAYMENT_METHODS = ["efectivo", "transferencia"] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
 /** Estados de pedido (espejo de ORDER_STATUS en shared/constants.ts). */
 export const ORDER_STATUS = {
@@ -44,6 +49,23 @@ export interface OrderSummary {
   unresolved: string[];
 }
 
+/** Item pedido pero sin stock/disponibilidad suficiente. */
+export interface UnavailableItem {
+  productName: string;
+  requested: number;
+  stock: number;
+  reason: "not_available" | "insufficient_stock";
+}
+
+/**
+ * Si GLAM_ENFORCE_STOCK=true, ademas de la bandera is_available se exige que la
+ * cantidad pedida quepa en el stock registrado. Apagado por defecto porque hay
+ * catalogos que no llevan inventario (stock=0 = "no rastreado").
+ */
+function enforceStockQuantity(): boolean {
+  return (process.env.GLAM_ENFORCE_STOCK || "").toLowerCase() === "true";
+}
+
 /** Precio unitario segun el tier del cliente (retail/wholesale). */
 function unitPriceFor(
   pricingTier: string,
@@ -65,9 +87,14 @@ export async function resolveOrderItems(
   tenant: TenantContext,
   items: OrderItemInput[],
   pricingTier: string,
-): Promise<{ resolved: ResolvedOrderItem[]; unresolved: string[] }> {
+): Promise<{
+  resolved: ResolvedOrderItem[];
+  unresolved: string[];
+  unavailable: UnavailableItem[];
+}> {
   const resolved: ResolvedOrderItem[] = [];
   const unresolved: string[] = [];
+  const unavailable: UnavailableItem[] = [];
 
   for (const item of items) {
     const quantity = Number(item.quantity) || 0;
@@ -90,6 +117,27 @@ export async function resolveOrderItems(
       continue;
     }
 
+    // Validacion de disponibilidad: nunca vender productos marcados como no
+    // disponibles; el stock por cantidad solo se exige con GLAM_ENFORCE_STOCK.
+    if (!product.isAvailable) {
+      unavailable.push({
+        productName: product.name,
+        requested: quantity,
+        stock: product.stock,
+        reason: "not_available",
+      });
+      continue;
+    }
+    if (enforceStockQuantity() && quantity > product.stock) {
+      unavailable.push({
+        productName: product.name,
+        requested: quantity,
+        stock: product.stock,
+        reason: "insufficient_stock",
+      });
+      continue;
+    }
+
     const unitPrice = unitPriceFor(pricingTier, product.price, product.wholesalePrice);
     resolved.push({
       productId: product.id,
@@ -102,7 +150,7 @@ export async function resolveOrderItems(
     });
   }
 
-  return { resolved, unresolved };
+  return { resolved, unresolved, unavailable };
 }
 
 function totals(items: ResolvedOrderItem[], deliveryFee = 0, discount = 0) {
@@ -124,9 +172,11 @@ async function effectiveAddress(
 export interface PrepareOrderResult {
   ok: boolean;
   needsAddress?: boolean;
+  unavailable?: UnavailableItem[];
   customer?: { id: string; name: string; phone: string; pricingTier: string };
   summary?: OrderSummary;
   deliveryAddress?: string | null;
+  paymentMethod?: PaymentMethod | null;
   message?: string;
 }
 
@@ -142,6 +192,7 @@ export async function prepareOrder(
     deliveryAddress?: string | null;
     locationId?: string | null;
     contactName?: string | null;
+    paymentMethod?: PaymentMethod | null;
     deliveryFee?: number;
     discount?: number;
   },
@@ -174,11 +225,31 @@ export async function prepareOrder(
     };
   }
 
-  const { resolved, unresolved } = await resolveOrderItems(
+  const { resolved, unresolved, unavailable } = await resolveOrderItems(
     tenant,
     args.items,
     customer.pricingTier,
   );
+
+  // Productos agotados/no disponibles: no armar el pedido a medias; el agente
+  // debe avisar al cliente y ofrecer alternativas o ajustar cantidades.
+  if (unavailable.length > 0) {
+    const detail = unavailable
+      .map((u) =>
+        u.reason === "not_available"
+          ? `${u.productName} (no disponible)`
+          : `${u.productName} (pediste ${u.requested}, hay ${u.stock})`,
+      )
+      .join(", ");
+    return {
+      ok: false,
+      unavailable,
+      message:
+        `Estos productos no estan disponibles ahora mismo: ${detail}. ` +
+        "Avisa al cliente y ofrece alternativas antes de continuar.",
+    };
+  }
+
   if (resolved.length === 0) {
     return {
       ok: false,
@@ -186,7 +257,12 @@ export async function prepareOrder(
     };
   }
 
-  const { subtotal, total } = totals(resolved, args.deliveryFee, args.discount);
+  // Envio segun la politica del negocio (gratis desde GLAM_FREE_SHIPPING_MIN),
+  // salvo que la tool pase un costo explicito.
+  const subtotalOnly = resolved.reduce((sum, i) => sum + Number(i.total), 0);
+  const deliveryFee = args.deliveryFee ?? deliveryFeeFor(subtotalOnly);
+
+  const { subtotal, total } = totals(resolved, deliveryFee, args.discount);
   return {
     ok: true,
     customer: {
@@ -196,10 +272,11 @@ export async function prepareOrder(
       pricingTier: customer.pricingTier,
     },
     deliveryAddress: address,
+    paymentMethod: args.paymentMethod ?? null,
     summary: {
       items: resolved,
       subtotal,
-      deliveryFee: Number(args.deliveryFee || 0),
+      deliveryFee: Number(deliveryFee || 0),
       discount: Number(args.discount || 0),
       total,
       unresolved,
@@ -225,6 +302,9 @@ async function nextOrderNumber(
   sql: TxSql,
   organizationId: string,
 ): Promise<string> {
+  // Serializa la numeracion por organizacion dentro de la transaccion: dos
+  // pedidos concurrentes del mismo dia contarian lo mismo y duplicarian folio.
+  await sql`SELECT pg_advisory_xact_lock(hashtext(${organizationId}))`;
   const today = new Date();
   const prefix = `ORD-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
   const rows = await sql<{ count: string }[]>`
@@ -235,6 +315,70 @@ async function nextOrderNumber(
   `;
   const count = Number(rows[0]?.count ?? 0);
   return `${prefix}-${String(count + 1).padStart(4, "0")}`;
+}
+
+/**
+ * Busca un pedido ya creado con la misma clave de idempotencia (re-run de un
+ * paso interrumpido). Devuelve la misma forma que un pedido recien creado.
+ */
+async function findOrderByIdempotencyKey(
+  tenant: TenantContext,
+  idempotencyKey: string,
+): Promise<CreatedOrder | null> {
+  const sql = getSql();
+  const rows = await sql<
+    {
+      id: string;
+      order_number: string;
+      status: string;
+      subtotal: string | number;
+      total: string | number;
+      delivery_address: string | null;
+    }[]
+  >`
+    SELECT id, order_number, status, subtotal, total, delivery_address
+    FROM orders
+    WHERE organization_id = ${tenant.organizationId}
+      AND idempotency_key = ${idempotencyKey}
+    LIMIT 1
+  `;
+  const order = rows[0];
+  if (!order) return null;
+
+  const itemRows = await sql<
+    {
+      product_id: string | null;
+      product_name: string;
+      unit: string;
+      quantity: string | number;
+      unit_price: string | number;
+      total: string | number;
+      notes: string | null;
+    }[]
+  >`
+    SELECT product_id, product_name, unit, quantity, unit_price, total, notes
+    FROM order_items
+    WHERE order_id = ${order.id}
+    ORDER BY created_at ASC
+  `;
+
+  return {
+    id: order.id,
+    orderNumber: order.order_number,
+    status: order.status,
+    subtotal: Number(order.subtotal ?? 0),
+    total: Number(order.total ?? 0),
+    deliveryAddress: order.delivery_address ?? "",
+    items: itemRows.map((i) => ({
+      productId: i.product_id,
+      productName: i.product_name,
+      unit: i.unit,
+      quantity: Number(i.quantity ?? 0),
+      unitPrice: Number(i.unit_price ?? 0),
+      total: Number(i.total ?? 0),
+      notes: i.notes,
+    })),
+  };
 }
 
 /**
@@ -250,18 +394,34 @@ export async function createOrder(
     locationId?: string | null;
     contactName?: string | null;
     customerNotes?: string | null;
+    paymentMethod?: PaymentMethod | null;
     deliveryFee?: number;
     discount?: number;
+    /** Clave de idempotencia (sesion+turno+input); evita duplicar en re-runs. */
+    idempotencyKey?: string | null;
   },
 ): Promise<
-  | { ok: true; order: CreatedOrder }
-  | { ok: false; needsAddress?: boolean; message: string }
+  | { ok: true; order: CreatedOrder; replayed?: boolean }
+  | {
+      ok: false;
+      needsAddress?: boolean;
+      unavailable?: UnavailableItem[];
+      message: string;
+    }
 > {
+  // Re-run de un paso interrumpido: si esta clave ya creo un pedido, devolverlo
+  // tal cual en vez de crear un duplicado.
+  if (args.idempotencyKey) {
+    const existing = await findOrderByIdempotencyKey(tenant, args.idempotencyKey);
+    if (existing) return { ok: true, order: existing, replayed: true };
+  }
+
   const prepared = await prepareOrder(tenant, {
     items: args.items,
     deliveryAddress: args.deliveryAddress,
     locationId: args.locationId,
     contactName: args.contactName,
+    paymentMethod: args.paymentMethod,
     deliveryFee: args.deliveryFee,
     discount: args.discount,
   });
@@ -269,6 +429,7 @@ export async function createOrder(
     return {
       ok: false,
       needsAddress: prepared.needsAddress,
+      unavailable: prepared.unavailable,
       message: prepared.message || "No se pudo preparar el pedido.",
     };
   }
@@ -281,34 +442,50 @@ export async function createOrder(
   const deliveryAddress = prepared.deliveryAddress!;
   const customerId = prepared.customer.id;
 
-  const order = await sql.begin(async (tx) => {
-    const orderNumber = await nextOrderNumber(tx, tenant.organizationId);
-    const headerRows = await tx<{ id: string; order_number: string; status: string }[]>`
-      INSERT INTO orders (
-        organization_id, customer_id, conversation_id, order_number, status,
-        delivery_address, subtotal, delivery_fee, discount, total, customer_notes, source
-      ) VALUES (
-        ${tenant.organizationId}, ${customerId}, ${conversationId}, ${orderNumber}, ${ORDER_STATUS.NEW},
-        ${deliveryAddress}, ${summary.subtotal}, ${summary.deliveryFee}, ${summary.discount},
-        ${summary.total}, ${args.customerNotes ?? null}, 'whatsapp'
-      )
-      RETURNING id, order_number, status
-    `;
-    const header = headerRows[0]!;
-
-    for (const item of summary.items) {
-      await tx`
-        INSERT INTO order_items (
-          order_id, product_id, product_name, unit, quantity, unit_price, total, notes
+  let order: { id: string; order_number: string; status: string };
+  try {
+    order = await sql.begin(async (tx) => {
+      const orderNumber = await nextOrderNumber(tx, tenant.organizationId);
+      const headerRows = await tx<{ id: string; order_number: string; status: string }[]>`
+        INSERT INTO orders (
+          organization_id, customer_id, conversation_id, order_number, status,
+          delivery_address, subtotal, delivery_fee, discount, total, customer_notes,
+          payment_method, source, idempotency_key
         ) VALUES (
-          ${header.id}, ${item.productId}, ${item.productName}, ${item.unit},
-          ${item.quantity}, ${item.unitPrice}, ${item.total}, ${item.notes}
+          ${tenant.organizationId}, ${customerId}, ${conversationId}, ${orderNumber}, ${ORDER_STATUS.NEW},
+          ${deliveryAddress}, ${summary.subtotal}, ${summary.deliveryFee}, ${summary.discount},
+          ${summary.total}, ${args.customerNotes ?? null},
+          ${args.paymentMethod ?? null}, 'whatsapp', ${args.idempotencyKey ?? null}
         )
+        RETURNING id, order_number, status
       `;
-    }
+      const header = headerRows[0]!;
 
-    return header;
-  });
+      for (const item of summary.items) {
+        await tx`
+          INSERT INTO order_items (
+            order_id, product_id, product_name, unit, quantity, unit_price, total, notes
+          ) VALUES (
+            ${header.id}, ${item.productId}, ${item.productName}, ${item.unit},
+            ${item.quantity}, ${item.unitPrice}, ${item.total}, ${item.notes}
+          )
+        `;
+      }
+
+      return header;
+    });
+  } catch (err) {
+    // Violacion del unique (organization_id, idempotency_key): otro proceso
+    // gano la carrera con la misma clave; devolver ese pedido.
+    if (
+      args.idempotencyKey &&
+      (err as { code?: string })?.code === "23505"
+    ) {
+      const existing = await findOrderByIdempotencyKey(tenant, args.idempotencyKey);
+      if (existing) return { ok: true, order: existing, replayed: true };
+    }
+    throw err;
+  }
 
   return {
     ok: true,

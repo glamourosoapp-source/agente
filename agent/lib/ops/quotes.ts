@@ -128,7 +128,13 @@ export async function createQuote(
  */
 export async function convertQuoteToOrder(
   tenant: TenantContext,
-  args: { quoteNumber: string; deliveryAddress?: string | null; locationId?: string | null },
+  args: {
+    quoteNumber: string;
+    deliveryAddress?: string | null;
+    locationId?: string | null;
+    /** Clave de idempotencia (sesion+turno+input); evita duplicar en re-runs. */
+    idempotencyKey?: string | null;
+  },
 ): Promise<
   | { ok: true; orderNumber: string; orderId: string; total: number }
   | { ok: false; needsAddress?: boolean; message: string }
@@ -169,6 +175,7 @@ export async function convertQuoteToOrder(
     items,
     deliveryAddress: args.deliveryAddress,
     locationId: args.locationId,
+    idempotencyKey: args.idempotencyKey,
   });
   if (!created.ok) {
     return { ok: false, needsAddress: created.needsAddress, message: created.message };
