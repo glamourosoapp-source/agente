@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { getSql } from "../db.js";
 import { normalizePhoneForDb, phoneCandidates, toE164 } from "../phone.js";
 import type { TenantContext } from "../tenant.js";
@@ -122,9 +123,10 @@ export async function findOrCreateCustomerByPhone(
   const phoneNormalized = normalizePhoneForDb(data.phone);
   const name = String(data.name || "Cliente WhatsApp").trim() || "Cliente WhatsApp";
 
+  const customerId = randomUUID();
   const rows = await sql<RawCustomerRow[]>`
-    INSERT INTO customers (organization_id, name, phone, phone_normalized, source)
-    VALUES (${tenant.organizationId}, ${name}, ${phone}, ${phoneNormalized}, 'whatsapp')
+    INSERT INTO customers (id, organization_id, name, phone, phone_normalized, source)
+    VALUES (${customerId}, ${tenant.organizationId}, ${name}, ${phone}, ${phoneNormalized}, 'whatsapp')
     RETURNING id, name, phone, email, street, colony, postal_code, city, zone, address, pricing_tier
   `;
   return mapRow(rows[0]!);

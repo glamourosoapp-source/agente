@@ -1,4 +1,5 @@
 import type Postgres from "postgres";
+import { randomUUID } from "node:crypto";
 import { getSql } from "../db.js";
 import { normalizePhoneForDb } from "../phone.js";
 import type { TenantContext } from "../tenant.js";
@@ -446,13 +447,14 @@ export async function createOrder(
   try {
     order = await sql.begin(async (tx) => {
       const orderNumber = await nextOrderNumber(tx, tenant.organizationId);
+      const orderId = randomUUID();
       const headerRows = await tx<{ id: string; order_number: string; status: string }[]>`
         INSERT INTO orders (
-          organization_id, customer_id, conversation_id, order_number, status,
+          id, organization_id, customer_id, conversation_id, order_number, status,
           delivery_address, subtotal, delivery_fee, discount, total, customer_notes,
           payment_method, source, idempotency_key
         ) VALUES (
-          ${tenant.organizationId}, ${customerId}, ${conversationId}, ${orderNumber}, ${ORDER_STATUS.NEW},
+          ${orderId}, ${tenant.organizationId}, ${customerId}, ${conversationId}, ${orderNumber}, ${ORDER_STATUS.NEW},
           ${deliveryAddress}, ${summary.subtotal}, ${summary.deliveryFee}, ${summary.discount},
           ${summary.total}, ${args.customerNotes ?? null},
           ${args.paymentMethod ?? null}, 'whatsapp', ${args.idempotencyKey ?? null}
@@ -464,9 +466,9 @@ export async function createOrder(
       for (const item of summary.items) {
         await tx`
           INSERT INTO order_items (
-            order_id, product_id, product_name, unit, quantity, unit_price, total, notes
+            id, order_id, product_id, product_name, unit, quantity, unit_price, total, notes
           ) VALUES (
-            ${header.id}, ${item.productId}, ${item.productName}, ${item.unit},
+            ${randomUUID()}, ${header.id}, ${item.productId}, ${item.productName}, ${item.unit},
             ${item.quantity}, ${item.unitPrice}, ${item.total}, ${item.notes}
           )
         `;
