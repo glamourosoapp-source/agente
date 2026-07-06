@@ -14,9 +14,10 @@ export default defineEval({
     t.calledTool("lookup_customer");
     t.judge.autoevals
       .closedQA(
-        "La respuesta es un unico mensaje breve de bienvenida de Glamouroso que " +
-          "pregunta que necesita el cliente, sin enumerar categorias de productos " +
-          "inventadas y sin narrar pasos internos como 'dejame ver quien eres'.",
+        "La respuesta es un unico mensaje breve de bienvenida de Glamouroso " +
+          "(productos de limpieza) que pregunta que necesita el cliente, sin " +
+          "enumerar categorias inventadas, sin mencionar ropa u otros rubros " +
+          "ajenos al negocio, y sin narrar pasos internos como 'dejame ver quien eres'.",
       )
       .atLeast(0.6);
   },
