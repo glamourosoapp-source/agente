@@ -6,9 +6,9 @@ import {
 } from "../lib/tenant.js";
 import { sendKapsoText } from "../lib/kapso.js";
 import { toE164 } from "../lib/phone.js";
-import { recordInbound, recordInboundMedia, recordOutbound } from "../lib/bridge.js";
+import { recordInbound, recordInboundMedia, recordOutbound, clearTyping } from "../lib/bridge.js";
 import { getConversationState } from "../lib/ops/conversations.js";
-import { mergeSameSenderTexts, debounceInboundMessage } from "../lib/message-debounce.js";
+import { debounceInboundMessage } from "../lib/message-debounce.js";
 import {
   isResetKeyword,
   resetConversation,
@@ -107,18 +107,14 @@ type SendFn = (
 /**
  * Decide si el agente esta pausado para esta conversacion.
  *
- * Fuente primaria: estado devuelto por el puente (Back) al persistir el inbound.
- * Respaldo: lectura directa a Postgres si el puente no respondio (Back caido).
- * Regla unificada: responde solo si is_agent_active && !needs_human_review.
+ * Siempre lee el estado actual en Postgres (post-debounce). No usar el inbound
+ * del momento t0: un humano puede pausar/escalar durante la ventana de debounce.
+ * Regla: responde solo si is_agent_active && !needs_human_review.
  */
 async function isAgentPaused(
   tenant: TenantContext,
   customerPhone: string,
-  inbound: Awaited<ReturnType<typeof recordInbound>>,
 ): Promise<boolean> {
-  if (inbound) {
-    return inbound.isAgentActive === false || inbound.needsHumanReview === true;
-  }
   try {
     const state = await getConversationState(tenant, customerPhone);
     return (
@@ -131,19 +127,27 @@ async function isAgentPaused(
   }
 }
 
+/** Contexto que viaja por el debounce hasta el turno del agente. */
+interface AgentTurnMeta {
+  item: InboundItem;
+  tenant: { organizationId: string };
+  customerPhone: string;
+  /** Resultado de recordInbound (duplicate check); no usar para guard de pausa. */
+  inbound: Awaited<ReturnType<typeof recordInbound>>;
+}
+
 /**
- * Procesa un mensaje entrante: resuelve tenant, persiste el mensaje del cliente
- * (visibilidad/realtime en el Dashboard), aplica el guard de pausa y, si el
- * agente esta activo, inicia/reanuda la sesion para responder.
+ * Persiste el mensaje entrante del cliente de INMEDIATO (visibilidad/realtime
+ * individual en el Dashboard, sin esperar el debounce) y, si no es un retry del
+ * webhook, lo encola para el turno del agente.
  */
-async function processInbound(item: InboundItem, send: SendFn): Promise<void> {
+async function handleTextInbound(item: InboundItem, send: SendFn): Promise<void> {
   const tenant =
     (await resolveTenantByPhoneNumberId(item.phoneNumberId)) ??
     (await resolveTenantByBusinessPhone(item.phoneNumberId));
   if (!tenant) return; // numero no registrado: ignorar
 
   const customerPhone = toE164(item.sender);
-  const fullTenant: TenantContext = { ...tenant, customerPhone };
 
   const inbound = await recordInbound({
     organizationId: tenant.organizationId,
@@ -153,10 +157,41 @@ async function processInbound(item: InboundItem, send: SendFn): Promise<void> {
     kapsoMessageId: item.messageId,
   });
 
+  // Retry del webhook (mismo kapsoMessageId): ya esta persistido, no reprocesar
+  // para no invocar al agente dos veces por el mismo mensaje.
+  if (inbound?.duplicate) return;
+
+  // Encolar para el turno del agente: el debounce fusiona los mensajes seguidos
+  // del mismo remitente en un solo turno (el estado mas fresco gana en `meta`).
+  const debounceKey = `${item.phoneNumberId}:${item.sender}`;
+  await debounceInboundMessage(
+    debounceKey,
+    item.text,
+    { item, tenant, customerPhone, inbound } satisfies AgentTurnMeta,
+    async ({ mergedText, meta }) => {
+      await processAgentTurn(meta, mergedText, send);
+    },
+  );
+}
+
+/**
+ * Turno del agente (corre al vencer el debounce, con el texto ya fusionado):
+ * aplica reinicio por palabra clave y el guard de pausa, y si el agente esta
+ * activo inicia/reanuda la sesion para responder. La persistencia del inbound ya
+ * ocurrio en `handleTextInbound`.
+ */
+async function processAgentTurn(
+  meta: AgentTurnMeta,
+  mergedText: string,
+  send: SendFn,
+): Promise<void> {
+  const { item, tenant, customerPhone } = meta;
+  const fullTenant: TenantContext = { ...tenant, customerPhone };
+
   // Palabra clave de reinicio: el agente olvida el contexto y arranca sesion nueva.
   // Se ejecuta aunque la conversacion este escalada a un humano (debe reiniciar
   // igual) y se aisla por numero de negocio (phoneNumberId) para no afectar otros tenants.
-  if (isResetKeyword(item.text)) {
+  if (isResetKeyword(mergedText)) {
     await resetConversation(customerPhone, item.phoneNumberId);
     const body = resetMessage();
     const sent = await sendKapsoText({ phoneNumberId: item.phoneNumberId, to: customerPhone, body });
@@ -169,7 +204,7 @@ async function processInbound(item: InboundItem, send: SendFn): Promise<void> {
     return;
   }
 
-  if (await isAgentPaused(fullTenant, customerPhone, inbound)) {
+  if (await isAgentPaused(fullTenant, customerPhone)) {
     // Humano en control o conversacion derivada: el agente no responde.
     return;
   }
@@ -190,7 +225,7 @@ async function processInbound(item: InboundItem, send: SendFn): Promise<void> {
   };
 
   const continuationToken = conversationToken(customerPhone, generation);
-  await send(item.text, {
+  await send(mergedText, {
     auth,
     continuationToken,
     state: { phoneNumberId: item.phoneNumberId, customerPhone },
@@ -332,17 +367,11 @@ export default defineChannel<KapsoState>({
         waitUntil(processInboundMedia(item));
       }
 
-      // Texto: debounce + merge por remitente, luego al agente.
-      for (const item of mergeSameSenderTexts(
-        parsed.filter((i) => !i.media),
-        (item) => `${item.phoneNumberId}:${item.sender}`,
-      )) {
-        const debounceKey = `${item.phoneNumberId}:${item.sender}`;
-        waitUntil(
-          debounceInboundMessage(debounceKey, item.text, item, async ({ mergedText, meta }) => {
-            await processInbound({ ...meta, text: mergedText }, send);
-          }),
-        );
+      // Texto: persistir cada mensaje de inmediato (realtime individual en el
+      // Dashboard) y encolar el turno del agente. El debounce fusiona los
+      // mensajes seguidos del mismo remitente en un solo turno.
+      for (const item of parsed.filter((i) => !i.media)) {
+        waitUntil(handleTextInbound(item, send));
       }
 
       // Responder rapido al webhook; el trabajo del agente sigue en background.
@@ -352,16 +381,21 @@ export default defineChannel<KapsoState>({
 
   events: {
     async "message.completed"(data, _channel, ctx) {
-      // Solo respuestas con texto.
-      const text = data?.message;
-      if (!text || !text.trim()) return;
-
       const attrs = ctx?.session?.auth?.initiator?.attributes as
         | Record<string, string>
         | undefined;
       const phoneNumberId = attrs?.["phoneNumberId"];
       const customerPhone = attrs?.["customerPhone"];
       const organizationId = attrs?.["organizationId"];
+
+      // Respuesta vacia: el agente no dice nada. Apagar "escribiendo..." y salir
+      // para que el Dashboard no quede con los puntitos animados.
+      const text = data?.message;
+      if (!text || !text.trim()) {
+        if (organizationId && customerPhone) await clearTyping(organizationId, customerPhone);
+        return;
+      }
+
       if (!phoneNumberId || !customerPhone) return;
 
       // Descartar respuestas de una sesion anterior a un reinicio: si la generacion
@@ -369,7 +403,11 @@ export default defineChannel<KapsoState>({
       const turnGeneration = attrs?.["generation"];
       if (turnGeneration != null) {
         const currentGeneration = await getGeneration(customerPhone, phoneNumberId);
-        if (Number(turnGeneration) < currentGeneration) return;
+        if (Number(turnGeneration) < currentGeneration) {
+          // Sesion desfasada: se descarta esta respuesta; apagar "escribiendo...".
+          if (organizationId) await clearTyping(organizationId, customerPhone);
+          return;
+        }
       }
 
       const sent = await sendKapsoText({ phoneNumberId, to: customerPhone, body: text });

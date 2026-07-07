@@ -66,6 +66,8 @@ export interface InboundResult {
   isAgentActive: boolean;
   needsHumanReview: boolean;
   assignedTo: string | null;
+  /** true si el mensaje ya existia (retry del webhook): no reprocesar. */
+  duplicate: boolean;
 }
 
 export interface InboundMediaPayload {
@@ -108,6 +110,7 @@ export function recordInbound(
           isAgentActive: r.isAgentActive,
           needsHumanReview: r.needsHumanReview,
           assignedTo: r.assignedTo,
+          duplicate: r.duplicate ?? false,
         }
       : null,
   );
@@ -128,6 +131,7 @@ export function recordInboundMedia(
             isAgentActive: r.isAgentActive,
             needsHumanReview: r.needsHumanReview,
             assignedTo: r.assignedTo,
+            duplicate: r.duplicate ?? false,
           }
         : null,
   );
@@ -143,6 +147,17 @@ export function syncOrderCreated(
   orderId: string,
 ): Promise<{ ok: boolean } | null> {
   return post<{ ok: boolean }>("/order-sync", { organizationId, orderId });
+}
+
+/**
+ * Apaga el indicador "escribiendo..." en el Dashboard cuando el agente abandona
+ * un turno sin responder. Tolerante a fallos.
+ */
+export function clearTyping(
+  organizationId: string,
+  customerPhone: string,
+): Promise<{ ok: boolean } | null> {
+  return post<{ ok: boolean }>("/typing-off", { organizationId, customerPhone });
 }
 
 /** Persiste un mensaje saliente del agente (ya enviado por Kapso). */
