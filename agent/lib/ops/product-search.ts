@@ -239,25 +239,29 @@ export function extractProductGroupKey(name: string): string | null {
   return group.length >= 3 ? group.slice(0, 80) : null;
 }
 
-/**
- * Diversifica los resultados por linea de producto: greedy por score con tope
- * de `maxPerGroup` presentaciones por grupo; si el limite no se llena, rellena
- * con los saltados (tambien por score). Evita que las 8 posiciones sean 8
- * presentaciones del mismo producto.
- */
 /** Pesos de la busqueda hibrida (vector + heuristica), igual que FAQs. */
 export const PRODUCT_VECTOR_WEIGHT = 0.7;
 export const PRODUCT_HEURISTIC_WEIGHT = 0.3;
 
 /**
  * Combina score vectorial (0-1) con heuristica de scoreProduct (escala ~0-100+).
+ * Match exacto de nombre (>=100) o SKU (>=80) siempre gana: protege
+ * resolveOrderItems y checkProductAvailability con limit 1.
  */
 export function combineScores(vectorScore: number, heuristicScore: number): number {
+  if (heuristicScore >= 100) return 1;
+  if (heuristicScore >= 80) return 0.95;
   const h = Math.min(Math.max(heuristicScore, 0) / 100, 1);
   const v = Math.min(Math.max(vectorScore, 0), 1);
   return PRODUCT_VECTOR_WEIGHT * v + PRODUCT_HEURISTIC_WEIGHT * h;
 }
 
+/**
+ * Diversifica los resultados por linea de producto: greedy por score con tope
+ * de `maxPerGroup` presentaciones por grupo; si el limite no se llena, rellena
+ * con los saltados (tambien por score). Evita que las 8 posiciones sean 8
+ * presentaciones del mismo producto.
+ */
 export function diversifyByGroup<T>(
   hits: T[],
   getGroupKey: (h: T) => string,

@@ -206,6 +206,7 @@ async function processAgentTurn(
 
   if (await isAgentPaused(fullTenant, customerPhone)) {
     // Humano en control o conversacion derivada: el agente no responde.
+    await clearTyping(tenant.organizationId, customerPhone);
     return;
   }
 

@@ -228,6 +228,13 @@ describe("combineScores", () => {
   test("heuristica sola cuando vector es 0", () => {
     expect(combineScores(0, 50)).toBe(0.15);
   });
+  test("match exacto de nombre gana sobre vector moderado", () => {
+    expect(combineScores(0.5, 100)).toBe(1);
+    expect(combineScores(0.9, 100)).toBeGreaterThan(combineScores(0.9, 10));
+  });
+  test("match exacto de SKU gana sobre vector moderado", () => {
+    expect(combineScores(0.5, 80)).toBe(0.95);
+  });
 });
 
 describe("diversifyByGroup", () => {

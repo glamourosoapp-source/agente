@@ -47,7 +47,7 @@ interface RawProductRow {
 const CANDIDATE_LIMIT = 500;
 const VECTOR_MIN_CANDIDATES = 30;
 const PRODUCT_VECTOR_ENABLED = process.env.PRODUCT_VECTOR_ENABLED !== "false";
-const VECTOR_ENABLED = process.env.PRODUCT_VECTOR_ENABLED !== "false";
+const PER_PATTERN_LIMIT = 120;
 
 function mapRow(r: RawProductRow, score = 0): ProductHit {
   const variants = r.variants ?? {};
@@ -111,19 +111,32 @@ async function fetchHeuristicCandidates(
   includeUnavailable: boolean,
 ): Promise<RawProductRow[]> {
   const sql = getSql();
-  return sql<RawProductRow[]>`
-    SELECT id, sku, name, description, unit, price, wholesale_price, stock, is_available, variants
-    FROM products
-    WHERE organization_id = ${tenant.organizationId}
-      AND deleted_at IS NULL
-      ${includeUnavailable ? sql`` : sql`AND is_available = true`}
-      AND translate(
-        lower(name || ' ' || coalesce(description, '') || ' ' || coalesce(sku, '')),
-        'áéíóúüñ', 'aeiouun'
-      ) LIKE ANY(${patterns})
-    ORDER BY name ASC
-    LIMIT ${CANDIDATE_LIMIT}
-  `;
+  const byId = new Map<string, RawProductRow>();
+  const perPattern = Math.min(
+    PER_PATTERN_LIMIT,
+    Math.ceil(CANDIDATE_LIMIT / Math.max(patterns.length, 1)),
+  );
+
+  // Una consulta por patron evita que ORDER BY name + LIMIT global deje fuera
+  // productos relevantes con nombre tardio en el alfabeto (p. ej. MAX COLOR).
+  for (const pattern of patterns) {
+    const rows = await sql<RawProductRow[]>`
+      SELECT id, sku, name, description, unit, price, wholesale_price, stock, is_available, variants
+      FROM products
+      WHERE organization_id = ${tenant.organizationId}
+        AND deleted_at IS NULL
+        ${includeUnavailable ? sql`` : sql`AND is_available = true`}
+        AND translate(
+          lower(name || ' ' || coalesce(description, '') || ' ' || coalesce(sku, '')),
+          'áéíóúüñ', 'aeiouun'
+        ) LIKE ${pattern}
+      LIMIT ${perPattern}
+    `;
+    for (const row of rows) byId.set(row.id, row);
+    if (byId.size >= CANDIDATE_LIMIT) break;
+  }
+
+  return [...byId.values()].slice(0, CANDIDATE_LIMIT);
 }
 
 async function fetchVectorCandidates(
@@ -147,6 +160,7 @@ async function fetchVectorCandidates(
         AND deleted_at IS NULL
         ${includeUnavailable ? sql`` : sql`AND is_available = true`}
         AND search_embedding IS NOT NULL
+        AND embedding_status = 'ready'
       ORDER BY search_embedding <=> ${literal}::vector
       LIMIT ${pool}
     `;
