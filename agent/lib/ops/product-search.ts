@@ -70,6 +70,15 @@ export const SPANISH_STOPWORDS = new Set([
   "cual",
   "cuales",
   "donde",
+  "producto",
+  "productos",
+  "catalogo",
+  "articulo",
+  "articulos",
+  "opciones",
+  "cosas",
+  "linea",
+  "lineas",
 ]);
 
 /** lowercase, sin acentos, solo letras/numeros, espacios colapsados. */
@@ -120,7 +129,43 @@ export function tokenizeQuery(query: string): string[] {
 export const TOKEN_SYNONYMS: Record<string, string[]> = {
   ropa: ["prenda"],
   prenda: ["ropa"],
+  autolavado: ["automotriz", "lavacoches", "lavacoch", "auto"],
+  automotriz: ["autolavado", "lavacoches", "lavacoch", "auto"],
+  auto: ["automotriz", "autolavado", "lavacoches", "lavacoch"],
+  lavacoches: ["lavacoch", "automotriz", "autolavado"],
+  lavacoch: ["lavacoches", "automotriz", "autolavado"],
 };
+
+/** Tokens de consulta que indican intencion automotriz / autolavado. */
+export const AUTOMOTIVE_QUERY_TOKENS = new Set([
+  "autolavado",
+  "automotriz",
+  "auto",
+  "lavacoches",
+  "lavacoch",
+  "coche",
+  "coches",
+  "carro",
+  "carros",
+  "vehiculo",
+  "vehiculos",
+]);
+
+/** Señales en catalogo que confirman producto automotriz. */
+export const AUTOMOTIVE_CATALOG_SIGNALS = [
+  "automotriz",
+  "neumatico",
+  "neumaticos",
+  "pintura",
+  "lavacoch",
+  "lavacoches",
+  "autolavado",
+  "autolavados",
+  "auto",
+  "vehiculo",
+  "coche",
+  "carro",
+];
 
 /** "negra"→"negr", "blanco"→"blanc": unifica genero en adjetivos largos. */
 function stripFinalVowel(token: string): string {
@@ -154,6 +199,39 @@ export interface ScorableProduct {
   sku: string | null;
   isAvailable: boolean;
   stock: number;
+  categoryName?: string | null;
+  groupKey?: string | null;
+  /** Texto indexable desde metadata (useCases, tags, etc.). */
+  metadataText?: string | null;
+}
+
+function searchableProductText(p: ScorableProduct): string {
+  return [p.name, p.description, p.sku, p.categoryName, p.groupKey, p.metadataText]
+    .filter(Boolean)
+    .join(" ");
+}
+
+export function isAutomotiveQuery(tokens: string[]): boolean {
+  return tokens.some((t) => AUTOMOTIVE_QUERY_TOKENS.has(t));
+}
+
+/** Bonus cuando la consulta es automotriz y el producto tiene señales de autolavado. */
+export function automotiveRelevanceBoost(queryTokens: string[], p: ScorableProduct): number {
+  if (!isAutomotiveQuery(queryTokens)) return 0;
+  const text = normalizeText(searchableProductText(p));
+  if (!text) return 0;
+  let boost = 0;
+  for (const signal of AUTOMOTIVE_CATALOG_SIGNALS) {
+    if (text.includes(signal)) boost = Math.max(boost, 12);
+  }
+  const nameNorm = normalizeText(p.name);
+  if (nameNorm.includes("almorol") || nameNorm.includes("sh alta espuma") || nameNorm.includes("sh con cera")) {
+    boost = Math.max(boost, 8);
+  }
+  if (nameNorm.includes("cera liquida") || nameNorm.startsWith("cera ")) {
+    boost = Math.max(boost, 6);
+  }
+  return boost;
 }
 
 /**
@@ -173,8 +251,10 @@ export function scoreProduct(
   const nameNorm = normalizeText(p.name);
   const descNorm = normalizeText(p.description ?? "");
   const skuNorm = normalizeText(p.sku ?? "");
+  const metaNorm = normalizeText(p.metadataText ?? "");
   const nameTokens = nameNorm.split(" ").filter(Boolean).map(stemToken);
   const descTokens = descNorm.split(" ").filter(Boolean).map(stemToken);
+  const metaTokens = metaNorm.split(" ").filter(Boolean).map(stemToken);
 
   let score = 0;
   if (queryNorm) {
@@ -183,6 +263,7 @@ export function scoreProduct(
     if (queryNorm.length >= 3) {
       if (nameNorm.includes(queryNorm)) score += 30;
       else if (descNorm.includes(queryNorm)) score += 15;
+      else if (metaNorm.includes(queryNorm)) score += 12;
     }
   }
 
@@ -197,9 +278,13 @@ export function scoreProduct(
     if (descTokens.some((t) => tokensMatch(token, t))) descScore = 5;
     else if (descNorm.includes(token)) descScore = 3;
 
+    let metaScore = 0;
+    if (metaTokens.some((t) => tokensMatch(token, t))) metaScore = 5;
+    else if (metaNorm.includes(token)) metaScore = 4;
+
     const skuScore = skuNorm.includes(token) ? 6 : 0;
 
-    const tokenScore = Math.max(nameScore, descScore, skuScore);
+    const tokenScore = Math.max(nameScore, descScore, metaScore, skuScore);
     if (tokenScore > 0) matched++;
     score += tokenScore;
   }
@@ -207,6 +292,7 @@ export function scoreProduct(
   if (queryTokens.length > 0 && matched > 0) {
     score += (matched / queryTokens.length) * 10;
   }
+  score += automotiveRelevanceBoost(queryTokens, p);
   if (score > 0 && p.isAvailable && p.stock > 0) score += 1;
   return score;
 }

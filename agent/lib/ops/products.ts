@@ -41,6 +41,8 @@ interface RawProductRow {
   stock: string | number | null;
   is_available: boolean;
   variants: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
+  category_name?: string | null;
   vector_score?: number | null;
 }
 
@@ -75,6 +77,22 @@ function mapRow(r: RawProductRow, score = 0): ProductHit {
   };
 }
 
+function rowGroupKey(r: RawProductRow): string {
+  const variants = r.variants ?? {};
+  if (typeof variants.productGroupKey === "string" && variants.productGroupKey) {
+    return variants.productGroupKey;
+  }
+  return extractProductGroupKey(r.name) ?? r.name;
+}
+
+function rowMetadataText(metadata: Record<string, unknown> | null | undefined): string {
+  if (!metadata) return "";
+  const useCases = Array.isArray(metadata.useCases)
+    ? metadata.useCases.filter((v): v is string => typeof v === "string").join(" ")
+    : "";
+  return useCases || JSON.stringify(metadata);
+}
+
 function rankHits(
   rows: RawProductRow[],
   queryNorm: string,
@@ -89,6 +107,9 @@ function rankHits(
         sku: r.sku,
         isAvailable: r.is_available,
         stock: Number(r.stock ?? 0),
+        categoryName: r.category_name ?? null,
+        groupKey: rowGroupKey(r),
+        metadataText: rowMetadataText(r.metadata),
       });
       const vector =
         useVector && typeof r.vector_score === "number" ? r.vector_score : 0;
@@ -121,13 +142,19 @@ async function fetchHeuristicCandidates(
   // productos relevantes con nombre tardio en el alfabeto (p. ej. MAX COLOR).
   for (const pattern of patterns) {
     const rows = await sql<RawProductRow[]>`
-      SELECT id, sku, name, description, unit, price, wholesale_price, stock, is_available, variants
-      FROM products
-      WHERE organization_id = ${tenant.organizationId}
-        AND deleted_at IS NULL
-        ${includeUnavailable ? sql`` : sql`AND is_available = true`}
+      SELECT p.id, p.sku, p.name, p.description, p.unit, p.price, p.wholesale_price, p.stock, p.is_available, p.variants, p.metadata,
+        pc.name AS category_name
+      FROM products p
+      LEFT JOIN product_categories pc ON pc.id = p.category_id
+      WHERE p.organization_id = ${tenant.organizationId}
+        AND p.deleted_at IS NULL
+        ${includeUnavailable ? sql`` : sql`AND p.is_available = true`}
         AND translate(
-          lower(name || ' ' || coalesce(description, '') || ' ' || coalesce(sku, '')),
+          lower(
+            p.name || ' ' || coalesce(p.description, '') || ' ' || coalesce(p.sku, '') || ' ' ||
+            coalesce(p.variants->>'productGroupKey', '') || ' ' || coalesce(p.variants->>'presentacion', '') || ' ' ||
+            coalesce(pc.name, '') || ' ' || coalesce(p.metadata::text, '')
+          ),
           'áéíóúüñ', 'aeiouun'
         ) LIKE ${pattern}
       LIMIT ${perPattern}
@@ -183,6 +210,12 @@ function mergeCandidateRows(
     const vNew = row.vector_score ?? 0;
     const vOld = existing.vector_score ?? 0;
     if (vNew > vOld) existing.vector_score = row.vector_score;
+    if (!existing.category_name && row.category_name) {
+      existing.category_name = row.category_name;
+    }
+    if (!existing.metadata && row.metadata) {
+      existing.metadata = row.metadata;
+    }
   }
   return [...byId.values()];
 }

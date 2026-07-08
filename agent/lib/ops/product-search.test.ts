@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  automotiveRelevanceBoost,
   buildLikePatterns,
   combineScores,
   diversifyByGroup,
@@ -113,6 +114,9 @@ describe("tokenizeQuery", () => {
   test("query de puras stopwords queda vacia", () => {
     expect(tokenizeQuery("quiero algo para la de")).toEqual([]);
   });
+  test("quita producto/productos de preguntas meta", () => {
+    expect(tokenizeQuery("Que productos tienes para autolavados")).toEqual(["autolavado"]);
+  });
 });
 
 describe("tokensMatch / buildLikePatterns", () => {
@@ -130,6 +134,12 @@ describe("tokensMatch / buildLikePatterns", () => {
     expect(patterns).toContain("%ropa%");
     expect(patterns).toContain("%prend%"); // cubre prenda/prendas
     expect(patterns).toContain("%negr%"); // cubre negro/negra
+  });
+  test("patrones autolavado incluyen automotriz y lavacoch", () => {
+    const patterns = buildLikePatterns(["autolavado"]);
+    expect(patterns).toContain("%autolavad%");
+    expect(patterns).toContain("%automotriz%");
+    expect(patterns).toContain("%lavacoch%");
   });
 });
 
@@ -206,6 +216,72 @@ describe("scoreProduct / ranking", () => {
   test("sin coincidencia devuelve score 0", () => {
     const p = CATALOG[0]!;
     expect(scoreProduct(normalizeText("escoba"), tokenizeQuery("escoba"), p)).toBe(0);
+  });
+
+  test("'productos para autolavados' prioriza lineas automotrices sobre descripcion generica", () => {
+    const autoCatalog: ScorableProduct[] = [
+      {
+        name: "CERA LIQUIDA 10 LITROS",
+        description: "Cera Liquida proporciona un acabado suave y brillante, protegiendo la pintura",
+        sku: null,
+        isAvailable: true,
+        stock: 10,
+      },
+      {
+        name: "ESPONJA LAVACOCHES EXTRA GRANDE",
+        description: "Automotriz.",
+        sku: null,
+        isAvailable: true,
+        stock: 10,
+      },
+      {
+        name: "ALMOROL CREMA 1 litro",
+        description: "Producto líquido para limpieza y mantenimiento, presentación 1 litro.",
+        sku: null,
+        isAvailable: true,
+        stock: 10,
+        groupKey: "ALMOROL CREMA",
+      },
+    ];
+    const names = rank("Que productos tienes para autolavados", autoCatalog);
+    expect(names[0]).toBe("ESPONJA LAVACOCHES EXTRA GRANDE");
+    expect(names).toContain("ALMOROL CREMA 1 litro");
+    expect(tokenizeQuery("Que productos tienes para autolavados")).toEqual(["autolavado"]);
+  });
+
+  test("automotiveRelevanceBoost sube productos con señal automotriz", () => {
+    const tokens = tokenizeQuery("autolavados");
+    const sponge: ScorableProduct = {
+      name: "ESPONJA ALMOROL",
+      description: "Automotriz.",
+      sku: null,
+      isAvailable: true,
+      stock: 1,
+    };
+    const generic: ScorableProduct = {
+      name: "ALMOROL CREMA 1 litro",
+      description: "Producto líquido para limpieza y mantenimiento",
+      sku: null,
+      isAvailable: true,
+      stock: 1,
+      groupKey: "ALMOROL CREMA",
+    };
+    expect(automotiveRelevanceBoost(tokens, sponge)).toBeGreaterThan(0);
+    expect(automotiveRelevanceBoost(tokens, generic)).toBeGreaterThan(0);
+  });
+
+  test("metadata useCases aporta score heurístico aunque nombre/descripcion no matcheen", () => {
+    const tokens = tokenizeQuery("autolavado");
+    const product: ScorableProduct = {
+      name: "LINEA X 1 LITRO",
+      description: "Presentación estándar.",
+      sku: null,
+      isAvailable: true,
+      stock: 1,
+      metadataText: "autolavado",
+    };
+    const score = scoreProduct(normalizeText("autolavado"), tokens, product);
+    expect(score).toBeGreaterThan(0);
   });
 });
 
