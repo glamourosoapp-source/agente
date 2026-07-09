@@ -13,6 +13,9 @@ export async function embedQuery(text: string): Promise<number[]> {
   const { embedding } = await embed({
     model: gateway.textEmbeddingModel(model),
     value: text,
+    // Una conexión colgada al gateway no debe congelar la búsqueda del agente;
+    // el llamador cae a búsqueda heurística si esto falla.
+    abortSignal: AbortSignal.timeout(15_000),
   });
   return embedding;
 }

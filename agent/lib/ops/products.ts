@@ -90,7 +90,11 @@ function rowMetadataText(metadata: Record<string, unknown> | null | undefined): 
   const useCases = Array.isArray(metadata.useCases)
     ? metadata.useCases.filter((v): v is string => typeof v === "string").join(" ")
     : "";
-  return useCases || JSON.stringify(metadata);
+  const searchPhrases = Array.isArray(metadata.searchPhrases)
+    ? metadata.searchPhrases.filter((v): v is string => typeof v === "string").join(" ")
+    : "";
+  const combined = [useCases, searchPhrases].filter(Boolean).join(" ");
+  return combined || JSON.stringify(metadata);
 }
 
 function rankHits(
@@ -176,19 +180,21 @@ async function fetchVectorCandidates(
   const literal = toPgVectorLiteral(queryEmbedding);
   try {
     return await sql<RawProductRow[]>`
-      SELECT id, sku, name, description, unit, price, wholesale_price, stock, is_available, variants,
+      SELECT p.id, p.sku, p.name, p.description, p.unit, p.price, p.wholesale_price, p.stock, p.is_available, p.variants, p.metadata,
+        pc.name AS category_name,
         CASE
-          WHEN search_embedding IS NOT NULL
-          THEN 1 - (search_embedding <=> ${literal}::vector)
+          WHEN p.search_embedding IS NOT NULL
+          THEN 1 - (p.search_embedding <=> ${literal}::vector)
           ELSE NULL
         END AS vector_score
-      FROM products
-      WHERE organization_id = ${tenant.organizationId}
-        AND deleted_at IS NULL
-        ${includeUnavailable ? sql`` : sql`AND is_available = true`}
-        AND search_embedding IS NOT NULL
-        AND embedding_status = 'ready'
-      ORDER BY search_embedding <=> ${literal}::vector
+      FROM products p
+      LEFT JOIN product_categories pc ON pc.id = p.category_id
+      WHERE p.organization_id = ${tenant.organizationId}
+        AND p.deleted_at IS NULL
+        ${includeUnavailable ? sql`` : sql`AND p.is_available = true`}
+        AND p.search_embedding IS NOT NULL
+        AND p.embedding_status = 'ready'
+      ORDER BY p.search_embedding <=> ${literal}::vector
       LIMIT ${pool}
     `;
   } catch {
