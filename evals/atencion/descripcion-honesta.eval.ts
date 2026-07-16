@@ -10,7 +10,7 @@ export default defineEval({
   description: "Ante 'algo para ropa negra' busca en catalogo y no inventa el uso de los productos.",
   async test(t) {
     await t.send("Hola, ¿tienes algo para ropa negra?");
-    t.completed();
+    t.succeeded();
     t.calledTool("search_products");
     t.judge.autoevals
       .closedQA(

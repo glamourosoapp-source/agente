@@ -19,16 +19,17 @@
   "author": "",
   "license": "UNLICENSED",
   "dependencies": {
-    "@ai-sdk/gateway": "^3.0.133",
+    "@ai-sdk/gateway": "^4.0.20",
     "@upstash/redis": "^1.38.0",
-    "ai": "^7.0.0-beta.178",
-    "eve": "^0.11.4",
+    "ai": "^7.0.28",
+    "eve": "^0.24.2",
     "postgres": "^3.4.9",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bun": "^1.2.14",
     "@types/node": "^25.9.3",
+    "@vercel/nft": "^1.10.2",
     "typescript": "^6.0.3"
   }
 }

@@ -9,4 +9,9 @@ import { defineAgent } from "eve";
  */
 export default defineAgent({
   model: process.env.GLAM_MODEL || "deepseek/deepseek-v4-flash",
+  build: {
+    // @vercel/oidc (dependencia de @ai-sdk/gateway) usa import() dinamico,
+    // que rompe el bundle de un solo chunk que eve exige por tool.
+    externalDependencies: ["@ai-sdk/gateway"],
+  },
 });

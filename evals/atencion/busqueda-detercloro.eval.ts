@@ -8,7 +8,7 @@ export default defineEval({
   description: "Ante 'detergente con cloro' encuentra DETERCLORO u equivalente con cloro.",
   async test(t) {
     await t.send("Hola, busco detergente con cloro para ropa");
-    t.completed();
+    t.succeeded();
     t.calledTool("search_products");
     t.judge.autoevals
       .closedQA(

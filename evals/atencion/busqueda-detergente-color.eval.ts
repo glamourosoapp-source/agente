@@ -11,7 +11,7 @@ export default defineEval({
   description: "Ante 'detergente para ropa de color' encuentra el producto para prendas de colores.",
   async test(t) {
     await t.send("Hola, ¿tienes detergente para ropa de color?");
-    t.completed();
+    t.succeeded();
     t.calledTool("search_products");
     t.judge.autoevals
       .closedQA(

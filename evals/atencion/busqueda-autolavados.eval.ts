@@ -10,7 +10,7 @@ export default defineEval({
     "Ante 'productos para autolavados' ofrece liquidos automotrices ademas de cera/esponjas.",
   async test(t) {
     await t.send("Que productos tienes para autolavados");
-    t.completed();
+    t.succeeded();
     t.calledTool("search_products");
     t.judge.autoevals
       .closedQA(

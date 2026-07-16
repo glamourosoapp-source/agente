@@ -10,7 +10,7 @@ export default defineEval({
   description: "El saludo inicial identifica al cliente y se presenta en un solo mensaje breve.",
   async test(t) {
     await t.send("Hola");
-    t.completed();
+    t.succeeded();
     t.calledTool("lookup_customer");
     t.judge.autoevals
       .closedQA(
