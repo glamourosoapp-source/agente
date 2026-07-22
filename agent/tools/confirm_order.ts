@@ -73,9 +73,13 @@ export default defineTool({
         subtotal: result.order.subtotal,
         total: result.order.total,
         deliveryAddress: result.order.deliveryAddress,
+        scheduledDeliveryDate: result.order.scheduledDeliveryDate,
         items: result.order.items,
       },
-      note: "Confirma al cliente con el numero de pedido y el total.",
+      note:
+        "Confirma al cliente el numero de pedido, el total y la fecha de entrega " +
+        "asignada (scheduledDeliveryDate); la fecha no se negocia. Preguntale que " +
+        "ventana horaria prefiere y registrala con schedule_delivery.",
     };
   },
 });

@@ -11,6 +11,9 @@ import { resolveDeliveryAddress } from "./customer-locations.js";
 import { getProductById, searchProducts } from "./products.js";
 import { getActiveConversationId } from "./conversations.js";
 import { deliveryFeeFor } from "./shipping.js";
+import { getDeliveryScheduleConfig } from "./delivery.js";
+import { getAgentUserId } from "./agent-user.js";
+import { computeScheduledDeliveryDate } from "../delivery-schedule.js";
 
 /** Formas de pago aceptadas por el agente. */
 export const PAYMENT_METHODS = ["efectivo", "transferencia"] as const;
@@ -292,6 +295,7 @@ export interface CreatedOrder {
   subtotal: number;
   total: number;
   deliveryAddress: string;
+  scheduledDeliveryDate: string | null;
   items: ResolvedOrderItem[];
 }
 
@@ -335,9 +339,10 @@ async function findOrderByIdempotencyKey(
       subtotal: string | number;
       total: string | number;
       delivery_address: string | null;
+      scheduled_delivery_date: string | null;
     }[]
   >`
-    SELECT id, order_number, status, subtotal, total, delivery_address
+    SELECT id, order_number, status, subtotal, total, delivery_address, scheduled_delivery_date::text
     FROM orders
     WHERE organization_id = ${tenant.organizationId}
       AND idempotency_key = ${idempotencyKey}
@@ -370,6 +375,7 @@ async function findOrderByIdempotencyKey(
     subtotal: Number(order.subtotal ?? 0),
     total: Number(order.total ?? 0),
     deliveryAddress: order.delivery_address ?? "",
+    scheduledDeliveryDate: order.scheduled_delivery_date,
     items: itemRows.map((i) => ({
       productId: i.product_id,
       productName: i.product_name,
@@ -443,6 +449,14 @@ export async function createOrder(
   const deliveryAddress = prepared.deliveryAddress!;
   const customerId = prepared.customer.id;
 
+  // Fecha de entrega asignada por la regla de corte del negocio (no negociable).
+  const deliveryCfg = await getDeliveryScheduleConfig(tenant);
+  const scheduledDeliveryDate = computeScheduledDeliveryDate(new Date(), deliveryCfg);
+
+  // Si no se puede resolver el usuario sistema, el pedido sale igual (created_by
+  // null): la etiqueta del CRM cae al fallback por source='whatsapp'.
+  const createdBy = await getAgentUserId(tenant).catch(() => null);
+
   let order: { id: string; order_number: string; status: string };
   try {
     order = await sql.begin(async (tx) => {
@@ -452,12 +466,12 @@ export async function createOrder(
         INSERT INTO orders (
           id, organization_id, customer_id, conversation_id, order_number, status,
           delivery_address, subtotal, delivery_fee, discount, total, customer_notes,
-          payment_method, source, idempotency_key
+          payment_method, source, idempotency_key, scheduled_delivery_date, created_by
         ) VALUES (
           ${orderId}, ${tenant.organizationId}, ${customerId}, ${conversationId}, ${orderNumber}, ${ORDER_STATUS.NEW},
           ${deliveryAddress}, ${summary.subtotal}, ${summary.deliveryFee}, ${summary.discount},
           ${summary.total}, ${args.customerNotes ?? null},
-          ${args.paymentMethod ?? null}, 'whatsapp', ${args.idempotencyKey ?? null}
+          ${args.paymentMethod ?? null}, 'whatsapp', ${args.idempotencyKey ?? null}, ${scheduledDeliveryDate}, ${createdBy}
         )
         RETURNING id, order_number, status
       `;
@@ -498,6 +512,7 @@ export async function createOrder(
       subtotal: summary.subtotal,
       total: summary.total,
       deliveryAddress,
+      scheduledDeliveryDate,
       items: summary.items,
     },
   };

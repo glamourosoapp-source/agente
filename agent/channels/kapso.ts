@@ -145,7 +145,13 @@ async function handleTextInbound(item: InboundItem, send: SendFn): Promise<void>
   const tenant =
     (await resolveTenantByPhoneNumberId(item.phoneNumberId)) ??
     (await resolveTenantByBusinessPhone(item.phoneNumberId));
-  if (!tenant) return; // numero no registrado: ignorar
+  if (!tenant) {
+    // Sin fila en whatsapp_configs: el webhook responde 200 pero el agente no arranca.
+    console.warn(
+      `[kapso] tenant no resuelto para phoneNumberId=${item.phoneNumberId}; mensaje ignorado`,
+    );
+    return;
+  }
 
   const customerPhone = toE164(item.sender);
 
@@ -243,7 +249,12 @@ async function processInboundMedia(item: InboundItem): Promise<void> {
   const tenant =
     (await resolveTenantByPhoneNumberId(item.phoneNumberId)) ??
     (await resolveTenantByBusinessPhone(item.phoneNumberId));
-  if (!tenant) return; // numero no registrado: ignorar
+  if (!tenant) {
+    console.warn(
+      `[kapso] tenant no resuelto (media) para phoneNumberId=${item.phoneNumberId}; ignorado`,
+    );
+    return;
+  }
 
   const customerPhone = toE164(item.sender);
   await recordInboundMedia({
@@ -260,11 +271,15 @@ async function processInboundMedia(item: InboundItem): Promise<void> {
   });
 }
 
-/** Verifica HMAC-SHA256 hex de JSON.stringify(body) contra x-webhook-signature. */
-function verifySignature(body: unknown, signature: string | null, secret: string): boolean {
-  const sig = String(signature || "").trim();
+/**
+ * Verifica HMAC-SHA256 hex contra x-webhook-signature.
+ * Kapso firma el JSON crudo del request; hay que hashear ese string, no un
+ * re-stringify del objeto parseado (cambia orden/espacios y rompe la firma).
+ */
+function verifySignature(rawBody: string, signature: string | null, secret: string): boolean {
+  const sig = String(signature || "").trim().replace(/^sha256=/i, "");
   if (!secret || !sig) return false;
-  const expected = createHmac("sha256", secret).update(JSON.stringify(body)).digest("hex");
+  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
   try {
     const a = Buffer.from(sig, "utf8");
     const b = Buffer.from(expected, "utf8");
@@ -309,10 +324,22 @@ function parseItems(body: any): InboundItem[] {
         "",
     ).trim();
     const senderName =
-      String(payload?.conversation?.contact_name || message?.profile?.name || "").trim() || null;
+      String(
+        payload?.conversation?.kapso?.contact_name ||
+          payload?.conversation?.contact_name ||
+          message?.profile?.name ||
+          "",
+      ).trim() || null;
     const media = extractMedia(message);
     const locationText = String(message?.type ?? "") === "location" ? extractLocationText(message) : null;
-    const text = media?.caption ?? locationText ?? String(message?.text?.body ?? "").trim();
+    const textFromBody =
+      typeof message?.text === "string"
+        ? String(message.text).trim()
+        : String(message?.text?.body ?? "").trim();
+    const text =
+      media?.caption ??
+      locationText ??
+      (textFromBody || String(message?.kapso?.content ?? "").trim());
     items.push({
       phoneNumberId: extractPhoneNumberId(payload),
       sender,
@@ -348,7 +375,8 @@ export default defineChannel<KapsoState>({
       if (secret) {
         const signature =
           req.headers.get("x-webhook-signature") || req.headers.get("X-Webhook-Signature");
-        if (!verifySignature(body, signature, secret)) {
+        if (!verifySignature(raw, signature, secret)) {
+          console.warn("[kapso] firma de webhook invalida");
           return new Response("invalid signature", { status: 401 });
         }
       }
@@ -362,6 +390,11 @@ export default defineChannel<KapsoState>({
         if (!item.text) return false;
         return true;
       });
+
+      if (parsed.length === 0) {
+        // Tipico: eventos sent/delivered/read, o payload sin message.
+        console.info("[kapso] webhook sin items inbound accionables");
+      }
 
       // Media: se registra de inmediato (sin debounce ni invocar al agente).
       for (const item of parsed.filter((i) => i.media)) {

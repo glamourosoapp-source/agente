@@ -1,5 +1,10 @@
 import { getSql } from "../db.js";
 import { businessTimezone } from "../time.js";
+import {
+  computeScheduledDeliveryDate,
+  resolveDeliveryScheduleConfig,
+  type DeliveryScheduleConfig,
+} from "../delivery-schedule.js";
 import type { TenantContext } from "../tenant.js";
 
 /** Ventanas de entrega ofrecidas al cliente. */
@@ -9,72 +14,79 @@ export const DELIVERY_WINDOWS = [
   "17:00-20:00",
 ] as const;
 
-export interface AvailableDate {
-  date: string; // YYYY-MM-DD
-  dayName: string; // legible es-MX
-  available: boolean;
-}
-
-function isoDateInTz(date: Date, tz: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
-}
-
 /**
- * Devuelve las proximas fechas de entrega disponibles (omite domingos), con el
- * nombre del dia en es-MX. No requiere acceso a BD; es una agenda deterministica.
+ * Lee la regla de agendamiento (hora de corte, desfases, timezone) de
+ * organizations.brand_settings.delivery. Si la organizacion no define
+ * timezone, cae a la del negocio (GLAM_TIMEZONE).
  */
-export function getAvailableDeliveryDates(daysAhead = 7): AvailableDate[] {
-  const tz = businessTimezone();
-  const dates: AvailableDate[] = [];
-  const now = new Date();
+export async function getDeliveryScheduleConfig(
+  tenant: TenantContext,
+): Promise<DeliveryScheduleConfig> {
+  const sql = getSql();
+  const rows = await sql<{ brand_settings: Record<string, unknown> | null }[]>`
+    SELECT brand_settings FROM organizations WHERE id = ${tenant.organizationId}
+  `;
+  const raw = rows[0]?.brand_settings?.delivery;
+  const cfg = resolveDeliveryScheduleConfig(raw);
+  const hasTimezone =
+    raw && typeof raw === "object" && typeof (raw as Record<string, unknown>).timezone === "string";
+  if (!hasTimezone) cfg.timezone = businessTimezone();
+  return cfg;
+}
 
-  for (let i = 1; i <= daysAhead + 1 && dates.length < daysAhead; i++) {
-    const date = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
-    // Domingo no hay entregas.
-    if (date.getDay() === 0) continue;
-    dates.push({
-      date: isoDateInTz(date, tz),
-      dayName: new Intl.DateTimeFormat("es-MX", {
-        timeZone: tz,
-        weekday: "long",
-        day: "numeric",
-        month: "long",
-      }).format(date),
-      available: true,
-    });
-  }
-  return dates;
+function dayNameInTz(date: string, tz: string): string {
+  return new Intl.DateTimeFormat("es-MX", {
+    timeZone: tz,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(new Date(`${date}T12:00:00`));
 }
 
 /**
- * Agenda la entrega de un pedido: fija fecha (DATEONLY) y ventana horaria.
- * Valida que el pedido pertenezca a la organizacion. Rechaza domingos.
+ * Fecha de entrega que el negocio asigna a un pedido recibido AHORA, segun la
+ * regla de corte configurada. La fecha no se negocia con el cliente.
+ */
+export async function getAssignedDeliveryDate(
+  tenant: TenantContext,
+): Promise<{ date: string; dayName: string; timeWindows: readonly string[] }> {
+  const cfg = await getDeliveryScheduleConfig(tenant);
+  const date = computeScheduledDeliveryDate(new Date(), cfg);
+  return { date, dayName: dayNameInTz(date, cfg.timezone), timeWindows: DELIVERY_WINDOWS };
+}
+
+/**
+ * Registra la ventana horaria preferida del cliente para su pedido. La FECHA la
+ * asigna el sistema al crear el pedido y no se cambia aqui; si el pedido no
+ * tiene fecha (legacy), se calcula con la regla de corte.
  */
 export async function scheduleDelivery(
   tenant: TenantContext,
-  args: { orderNumber: string; date: string; timeWindow?: string | null },
+  args: { orderNumber: string; timeWindow?: string | null },
 ): Promise<
-  | { ok: true; orderNumber: string; date: string; timeWindow: string | null }
+  | { ok: true; orderNumber: string; date: string; dayName: string; timeWindow: string | null }
   | { ok: false; message: string }
 > {
-  const date = String(args.date || "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return { ok: false, message: "La fecha debe tener formato YYYY-MM-DD." };
-  }
-  // getDay() sobre la fecha pura (UTC midnight) basta para detectar domingo.
-  if (new Date(`${date}T12:00:00`).getDay() === 0) {
-    return { ok: false, message: "Los domingos no hay entregas. Ofrece otra fecha." };
-  }
-
   const timeWindow = args.timeWindow ? String(args.timeWindow).trim() : null;
-
   const sql = getSql();
-  const rows = await sql<{ order_number: string }[]>`
+
+  const rows = await sql<{ order_number: string; scheduled_delivery_date: string | null }[]>`
+    SELECT order_number, scheduled_delivery_date::text
+    FROM orders
+    WHERE organization_id = ${tenant.organizationId}
+      AND order_number = ${args.orderNumber}
+    LIMIT 1
+  `;
+  const order = rows[0];
+  if (!order) {
+    return { ok: false, message: `No encontre el pedido ${args.orderNumber}.` };
+  }
+
+  const cfg = await getDeliveryScheduleConfig(tenant);
+  const date =
+    order.scheduled_delivery_date || computeScheduledDeliveryDate(new Date(), cfg);
+
+  await sql`
     UPDATE orders
     SET scheduled_delivery_date = ${date},
         delivery_time_window = ${timeWindow},
@@ -82,11 +94,12 @@ export async function scheduleDelivery(
         updated_at = now()
     WHERE organization_id = ${tenant.organizationId}
       AND order_number = ${args.orderNumber}
-    RETURNING order_number
   `;
-  const row = rows[0];
-  if (!row) {
-    return { ok: false, message: `No encontre el pedido ${args.orderNumber}.` };
-  }
-  return { ok: true, orderNumber: row.order_number, date, timeWindow };
+  return {
+    ok: true,
+    orderNumber: order.order_number,
+    date,
+    dayName: dayNameInTz(date, cfg.timezone),
+    timeWindow,
+  };
 }
