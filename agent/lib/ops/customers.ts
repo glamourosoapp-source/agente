@@ -179,6 +179,50 @@ export async function updateCustomer(
 }
 
 /** Trae un cliente por id (scope organizacion). */
+export interface ReactivationContext {
+  campaignName: string;
+  sentAt: string;
+  /** Dias sin comprar al momento de la consulta (null si nunca compro). */
+  daysSinceLastOrder: number | null;
+}
+
+/**
+ * Indica si el cliente recibio una campana de REACTIVACION en los ultimos 14
+ * dias: si nos escribe, probablemente viene de ese mensaje. Sirve para que el
+ * agente retome la conversacion con contexto ("hace X que no nos pides").
+ */
+export async function findRecentReactivationCampaign(
+  tenant: TenantContext,
+  customerId: string,
+): Promise<ReactivationContext | null> {
+  const sql = getSql();
+  const rows = await sql<
+    Array<{ campaign_name: string; sent_at: Date; last_order_at: Date | null }>
+  >`
+    SELECT c.name AS campaign_name, r.sent_at, cu.last_order_at
+    FROM campaign_recipients r
+    JOIN campaigns c ON c.id = r.campaign_id
+    JOIN customers cu ON cu.id = r.customer_id
+    WHERE c.organization_id = ${tenant.organizationId}
+      AND c.audience = 'customers'
+      AND r.customer_id = ${customerId}
+      AND r.status = 'sent'
+      AND r.sent_at >= NOW() - INTERVAL '14 days'
+    ORDER BY r.sent_at DESC
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  const lastOrderAt = row.last_order_at ? new Date(row.last_order_at) : null;
+  return {
+    campaignName: row.campaign_name,
+    sentAt: new Date(row.sent_at).toISOString(),
+    daysSinceLastOrder: lastOrderAt
+      ? Math.floor((Date.now() - lastOrderAt.getTime()) / (24 * 60 * 60 * 1000))
+      : null,
+  };
+}
+
 export async function findCustomerById(
   tenant: TenantContext,
   customerId: string,

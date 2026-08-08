@@ -6,7 +6,8 @@ import {
 } from "../lib/tenant.js";
 import { sendKapsoText } from "../lib/kapso.js";
 import { toE164 } from "../lib/phone.js";
-import { recordInbound, recordInboundMedia, recordOutbound, clearTyping } from "../lib/bridge.js";
+import { recordInbound, recordInboundMedia, recordOutbound, recordOptOut, clearTyping } from "../lib/bridge.js";
+import { isOptOutMessage, optOutFarewell } from "../lib/opt-out.js";
 import { getConversationState } from "../lib/ops/conversations.js";
 import { debounceInboundMessage } from "../lib/message-debounce.js";
 import {
@@ -200,6 +201,23 @@ async function processAgentTurn(
   if (isResetKeyword(mergedText)) {
     await resetConversation(customerPhone, item.phoneNumberId);
     const body = resetMessage();
+    const sent = await sendKapsoText({ phoneNumberId: item.phoneNumberId, to: customerPhone, body });
+    await recordOutbound({
+      organizationId: tenant.organizationId,
+      customerPhone,
+      text: body,
+      kapsoMessageId: sent?.messageId ?? null,
+    });
+    return;
+  }
+
+  // Opt-out explícito ("ya no me escribas"): registrar la exclusión en el Back
+  // (el guardián de outbound no le volverá a mandar fríos), despedirse una sola
+  // vez y NO invocar al agente. Corre antes del guard de pausa a propósito:
+  // el opt-out debe registrarse aunque la conversación esté escalada.
+  if (isOptOutMessage(mergedText)) {
+    await recordOptOut(tenant.organizationId, customerPhone, mergedText.slice(0, 200));
+    const body = optOutFarewell();
     const sent = await sendKapsoText({ phoneNumberId: item.phoneNumberId, to: customerPhone, body });
     await recordOutbound({
       organizationId: tenant.organizationId,

@@ -169,6 +169,23 @@ export function recordOutbound(
   );
 }
 
+/**
+ * Registra un opt-out ("ya no me escribas") en la lista de exclusión del Back:
+ * el guardián de outbound no volverá a mandarle mensajes fríos jamás.
+ * Idempotente y tolerante a fallos.
+ */
+export function recordOptOut(
+  organizationId: string,
+  customerPhone: string,
+  reason?: string,
+): Promise<{ ok: boolean } | null> {
+  return post<{ ok: boolean }>("/suppressions", {
+    organizationId,
+    customerPhone,
+    reason: reason ?? null,
+  });
+}
+
 /** Marca la conversacion como derivada a humano (notifica + realtime en Back). */
 export function escalate(
   payload: EscalatePayload,

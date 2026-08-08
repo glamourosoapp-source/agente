@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
-import { findCustomerByPhone } from "../lib/ops/customers.js";
+import { findCustomerByPhone, findRecentReactivationCampaign } from "../lib/ops/customers.js";
 import { listCustomerLocations } from "../lib/ops/customer-locations.js";
 
 /**
@@ -23,10 +23,24 @@ export default defineTool({
     if (!customer) {
       return { ok: true, found: false, message: "Cliente nuevo (sin registro previo)." };
     }
-    const locations = await listCustomerLocations(tenant, customer.id);
+    const [locations, reactivation] = await Promise.all([
+      listCustomerLocations(tenant, customer.id),
+      findRecentReactivationCampaign(tenant, customer.id).catch(() => null),
+    ]);
     return {
       ok: true,
       found: true,
+      // Si viene de una campana de reactivacion, el agente puede retomar el
+      // hilo con contexto en vez de saludar como si nada.
+      reactivation: reactivation
+        ? {
+            fromCampaign: true,
+            daysSinceLastOrder: reactivation.daysSinceLastOrder,
+            hint:
+              "Este cliente recibio un mensaje de reactivacion hace poco: es probable que responda a eso. " +
+              "Reconoce que hace tiempo no pide, se breve y ofrecele recomprar lo de siempre o ver novedades.",
+          }
+        : null,
       customer: {
         name: customer.name,
         phone: customer.phone,
