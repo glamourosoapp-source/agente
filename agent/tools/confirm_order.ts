@@ -4,6 +4,7 @@ import { getTenant } from "../lib/tenant.js";
 import { createOrder } from "../lib/ops/orders.js";
 import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
+import { markProspectConverted } from "../lib/ops/prospects.js";
 
 const itemSchema = z.object({
   productId: z.string().optional().describe("Id del producto (preferido)."),
@@ -64,6 +65,16 @@ export default defineTool({
     // Notifica al Back para realtime + notificacion en el Dashboard (best-effort).
     // En un re-run el pedido ya existia; el Back ya fue notificado.
     if (!result.replayed) await syncOrderCreated(tenant.organizationId, result.order.id);
+
+    // Si el telefono corresponde a un prospecto de campaña, cierra el funnel:
+    // converted + enlace al customer (best-effort, no afecta el pedido).
+    if (tenant.customerPhone) {
+      try {
+        await markProspectConverted(tenant, tenant.customerPhone);
+      } catch {
+        // metricas best-effort
+      }
+    }
 
     return {
       ok: true,

@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
-import { findProspectByPhone } from "../lib/ops/prospects.js";
+import { findProspectByPhone, markProspectReplied } from "../lib/ops/prospects.js";
 
 /**
  * Identifica si el numero que escribe corresponde a un prospecto en campaña de
@@ -21,6 +21,13 @@ export default defineTool({
     const prospect = await findProspectByPhone(tenant, tenant.customerPhone);
     if (!prospect) {
       return { ok: true, found: false, message: "No es un prospecto registrado." };
+    }
+    // Si nos esta escribiendo, respondio a la campaña: registra el avance del
+    // funnel (best-effort, no bloquea la conversacion).
+    try {
+      await markProspectReplied(tenant, prospect.id);
+    } catch {
+      // metricas best-effort
     }
     return {
       ok: true,
