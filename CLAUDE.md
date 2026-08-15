@@ -31,5 +31,5 @@ bun run eval         # eve eval — requiere DATABASE_URL, key del gateway, GLAM
 - Si `syncOrderCreated` falla, el pedido queda marcado en `internal_notes` ("Notificación al CRM pendiente") para reconciliar.
 - **Skills NO se comparten** root↔subagentes: si editás un skill del root, actualizá las copias en `subagents/{pedidos,faq,prospeccion}/skills/`.
 - eve **no negocia fecha de entrega**: `get_available_dates` devuelve la fecha asignada; si el cliente insiste → `handoff_to_human`. El helper `agent/lib/delivery-schedule.ts` está triplicado con `Back/shared` y `Front/shared` — cambios van a los tres.
-- Pedidos llevan `created_by` = usuario sistema "Agente IA" por organización (`agent/lib/ops/agent-user.ts`), con fallback a null.
+- Pedidos **y clientes** llevan `created_by` = usuario sistema "Agente IA" por organización (`agent/lib/ops/agent-user.ts`), con fallback a null. Los clientes nuevos llevan además `team_id` = equipo "Glamouroso IA" (`getAgentTeamId`, cacheado y auto-reparador si el usuario agente quedó sin equipo).
 - Tenant solo por `organizationId`, resuelto por número de WhatsApp (`whatsapp_configs`); en local usar `GLAM_DEV_ORGANIZATION_ID`.

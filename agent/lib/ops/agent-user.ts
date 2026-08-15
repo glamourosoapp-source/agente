@@ -6,7 +6,12 @@ import type { TenantContext } from "../tenant.js";
 // El Back lo excluye del listado de usuarios y nunca puede iniciar sesión.
 const AGENT_ROLE = "agent";
 
+// Equipo seed al que pertenece el usuario sistema del agente (migración
+// seed-teams-and-backfill del Back).
+const AGENT_TEAM_NAME = "Glamouroso IA";
+
 const cache = new Map<string, string>();
+const teamCache = new Map<string, string | null>();
 
 /**
  * Devuelve el id del usuario sistema "Agente IA" de la organización, creándolo
@@ -29,11 +34,13 @@ export async function getAgentUserId(tenant: TenantContext): Promise<string> {
     const email = `agente-ia+${tenant.organizationId}@sistema.local`;
     // password_hash inválido a propósito: is_active=false y el login del Back
     // rechaza usuarios inactivos antes de verificar la contraseña.
+    // team_id: subquery al equipo "Glamouroso IA"; NULL si aún no existe.
     await sql`
-      INSERT INTO users (id, organization_id, name, email, password_hash, role, is_active)
+      INSERT INTO users (id, organization_id, name, email, password_hash, role, is_active, team_id)
       VALUES (
         ${randomUUID()}, ${tenant.organizationId}, 'Agente IA', ${email},
-        ${`disabled:${randomUUID()}`}, ${AGENT_ROLE}, false
+        ${`disabled:${randomUUID()}`}, ${AGENT_ROLE}, false,
+        (SELECT id FROM teams WHERE organization_id = ${tenant.organizationId} AND name = ${AGENT_TEAM_NAME} LIMIT 1)
       )
       ON CONFLICT (email) DO NOTHING
     `;
@@ -45,4 +52,34 @@ export async function getAgentUserId(tenant: TenantContext): Promise<string> {
 
   cache.set(tenant.organizationId, id);
   return id;
+}
+
+/**
+ * Equipo del usuario agente (para customers.team_id). Si el usuario quedó sin
+ * equipo (instancia que arrancó antes de la migración de teams), intenta
+ * auto-repararlo apuntándolo a "Glamouroso IA". Devuelve null si no hay equipo.
+ */
+export async function getAgentTeamId(tenant: TenantContext): Promise<string | null> {
+  if (teamCache.has(tenant.organizationId)) return teamCache.get(tenant.organizationId)!;
+
+  const userId = await getAgentUserId(tenant);
+  const sql = getSql();
+  const rows = await sql<{ team_id: string | null }[]>`
+    SELECT team_id FROM users WHERE id = ${userId} LIMIT 1
+  `;
+  let teamId = rows[0]?.team_id ?? null;
+
+  if (!teamId) {
+    const repaired = await sql<{ team_id: string | null }[]>`
+      UPDATE users
+      SET team_id = (SELECT id FROM teams WHERE organization_id = ${tenant.organizationId} AND name = ${AGENT_TEAM_NAME} LIMIT 1)
+      WHERE id = ${userId} AND team_id IS NULL
+      RETURNING team_id
+    `;
+    teamId = repaired[0]?.team_id ?? null;
+  }
+
+  // Solo cachear cuando hay equipo: si aún no existe, reintenta en el próximo turno.
+  if (teamId) teamCache.set(tenant.organizationId, teamId);
+  return teamId;
 }
