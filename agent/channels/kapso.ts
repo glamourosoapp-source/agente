@@ -257,12 +257,41 @@ async function processAgentTurn(
   });
 }
 
+/** Etiqueta legible por tipo de media, para la nota sintetica al agente. */
+const MEDIA_LABEL: Record<InboundMedia["mediaType"], string> = {
+  image: "una imagen",
+  audio: "un audio",
+  video: "un video",
+  document: "un documento",
+};
+
+/**
+ * Nota de sistema que recibe el agente cuando el cliente manda media. El agente
+ * no puede ver el contenido; si hay URL (el Back ya guardo el archivo) puede
+ * registrarlo como documento (comprobante de pago, etc.) con process_document.
+ */
+function mediaTurnText(media: InboundMedia, mediaUrl: string | null): string {
+  const caption = media.caption ? ` con el texto: "${media.caption}"` : "";
+  const fileName = media.filename ? ` (archivo: ${media.filename})` : "";
+  const fileRef = mediaUrl
+    ? `URL interna del archivo: ${mediaUrl} . Si el cliente esta mandando un ` +
+      "comprobante de pago u otro documento del pedido, registralo con " +
+      "process_document usando esa URL exacta y avisale que el equipo lo validara."
+    : "El archivo quedo guardado en el CRM para revision del equipo.";
+  return (
+    `[Nota de sistema: el cliente envio ${MEDIA_LABEL[media.mediaType]}${fileName}${caption}. ` +
+    `NO puedes ver ni escuchar su contenido — no lo describas ni inventes que lo viste. ${fileRef} ` +
+    "Si esperabas informacion en ese archivo (p. ej. un audio con el pedido), pide amablemente que la mande como texto.]"
+  );
+}
+
 /**
  * Procesa un mensaje de MEDIA entrante (imagen/audio/video/documento): resuelve
- * tenant y lo persiste para que el equipo lo reciba en el Dashboard. El agente no
- * responde a media (no la procesa); el Back resuelve el mediaUrl en segundo plano.
+ * tenant, lo persiste para el Dashboard y pasa una nota sintetica al turno del
+ * agente (via el mismo debounce) para que responda y pueda registrar el
+ * documento. El contenido del archivo no se procesa.
  */
-async function processInboundMedia(item: InboundItem): Promise<void> {
+async function processInboundMedia(item: InboundItem, send: SendFn): Promise<void> {
   if (!item.media) return;
   const tenant =
     (await resolveTenantByPhoneNumberId(item.phoneNumberId)) ??
@@ -275,7 +304,7 @@ async function processInboundMedia(item: InboundItem): Promise<void> {
   }
 
   const customerPhone = toE164(item.sender);
-  await recordInboundMedia({
+  const inbound = await recordInboundMedia({
     organizationId: tenant.organizationId,
     customerPhone,
     contactName: item.senderName,
@@ -287,6 +316,20 @@ async function processInboundMedia(item: InboundItem): Promise<void> {
     caption: item.media.caption,
     kapsoMessageId: item.messageId,
   });
+
+  // Sin persistencia (bridge caido) o retry del webhook: no invocar al agente.
+  if (!inbound || inbound.duplicate) return;
+
+  const turnText = mediaTurnText(item.media, inbound.mediaUrl);
+  const debounceKey = `${item.phoneNumberId}:${item.sender}`;
+  await debounceInboundMessage(
+    debounceKey,
+    turnText,
+    { item, tenant, customerPhone, inbound } satisfies AgentTurnMeta,
+    async ({ mergedText, meta }) => {
+      await processAgentTurn(meta, mergedText, send);
+    },
+  );
 }
 
 /**
@@ -414,9 +457,10 @@ export default defineChannel<KapsoState>({
         console.info("[kapso] webhook sin items inbound accionables");
       }
 
-      // Media: se registra de inmediato (sin debounce ni invocar al agente).
+      // Media: se persiste y se pasa como nota sintetica al turno del agente
+      // (mismo debounce que el texto, para fusionar imagen + mensaje seguido).
       for (const item of parsed.filter((i) => i.media)) {
-        waitUntil(processInboundMedia(item));
+        waitUntil(processInboundMedia(item, send));
       }
 
       // Texto: persistir cada mensaje de inmediato (realtime individual en el

@@ -23,7 +23,7 @@ async function post<T>(path: string, body: unknown): Promise<T | null> {
   const base = baseUrl();
   const key = secret();
   if (!base || !key) {
-    console.warn(
+    console.error(
       `[bridge] BACK_INTERNAL_URL/AGENT_BRIDGE_SECRET no configurados; se omite ${path}`,
     );
     return null;
@@ -43,12 +43,12 @@ async function post<T>(path: string, body: unknown): Promise<T | null> {
     }).finally(() => clearTimeout(timeout));
 
     if (!res.ok) {
-      console.warn(`[bridge] ${path} respondio HTTP ${res.status}`);
+      console.error(`[bridge] ${path} respondio HTTP ${res.status}`);
       return null;
     }
     return (await res.json()) as T;
   } catch (error) {
-    console.warn(`[bridge] error llamando ${path}:`, error);
+    console.error(`[bridge] error llamando ${path}:`, error);
     return null;
   }
 }
@@ -116,14 +116,20 @@ export function recordInbound(
   );
 }
 
+export interface InboundMediaResult extends InboundResult {
+  /** URL publica del archivo ya almacenado por el Back (null si no se resolvio). */
+  mediaUrl: string | null;
+}
+
 /**
  * Persiste un mensaje de MEDIA entrante (imagen/audio/video/documento) del
- * cliente. El Back resuelve el mediaUrl de forma asincrona.
+ * cliente. El Back descarga el archivo de Kapso y devuelve su URL publica
+ * (mediaUrl) para que el agente pueda registrar documentos.
  */
 export function recordInboundMedia(
   payload: InboundMediaPayload,
-): Promise<InboundResult | null> {
-  return post<InboundResult & { ok: boolean }>("/inbound-media", payload).then(
+): Promise<InboundMediaResult | null> {
+  return post<InboundMediaResult & { ok: boolean }>("/inbound-media", payload).then(
     (r) =>
       r
         ? {
@@ -132,6 +138,7 @@ export function recordInboundMedia(
             needsHumanReview: r.needsHumanReview,
             assignedTo: r.assignedTo,
             duplicate: r.duplicate ?? false,
+            mediaUrl: r.mediaUrl ?? null,
           }
         : null,
   );
