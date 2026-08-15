@@ -8,6 +8,8 @@ import {
   extractPresentation,
   extractProductGroupKey,
   normalizeText,
+  passesRelevanceFloor,
+  PRODUCT_VECTOR_STRONG_SCORE,
   scoreProduct,
   tokenizeQuery,
 } from "./product-search.js";
@@ -24,6 +26,10 @@ export interface ProductHit {
   isAvailable: boolean;
   /** Relevancia de busqueda (0 fuera de searchProducts). */
   score: number;
+  /** Score heuristico por tokens (0 = ningun token de la consulta casa). */
+  heuristicScore: number;
+  /** Similitud vectorial 0-1 (0 = sin embedding o vector apagado). */
+  vectorScore: number;
   /** Presentacion ("1L", "4L", "500ml"...) desde variants o inferida del nombre. */
   presentation: string | null;
   /** Linea de producto (agrupa presentaciones, p. ej. "DETERCLORO"). */
@@ -46,12 +52,34 @@ interface RawProductRow {
   vector_score?: number | null;
 }
 
+/**
+ * Espejo de GLAM_ENFORCE_STOCK (ver orders.ts): cuando esta apagado, stock=0
+ * significa "inventario no rastreado" y NO debe mostrarse como agotado. Es el
+ * criterio unico de disponibilidad para busqueda, consulta y pedido.
+ */
+export function stockEnforced(): boolean {
+  return (process.env.GLAM_ENFORCE_STOCK || "").toLowerCase() === "true";
+}
+
+/** Disponibilidad efectiva de un producto segun la politica de inventario. */
+export function isEffectivelyAvailable(p: {
+  isAvailable: boolean;
+  stock: number;
+}): boolean {
+  return p.isAvailable && (!stockEnforced() || p.stock > 0);
+}
+
 const CANDIDATE_LIMIT = 500;
 const VECTOR_MIN_CANDIDATES = 30;
 const PRODUCT_VECTOR_ENABLED = process.env.PRODUCT_VECTOR_ENABLED !== "false";
 const PER_PATTERN_LIMIT = 120;
 
-function mapRow(r: RawProductRow, score = 0): ProductHit {
+function mapRow(
+  r: RawProductRow,
+  score = 0,
+  heuristicScore = 0,
+  vectorScore = 0,
+): ProductHit {
   const variants = r.variants ?? {};
   const presentation =
     typeof variants.presentacion === "string" && variants.presentacion
@@ -72,6 +100,8 @@ function mapRow(r: RawProductRow, score = 0): ProductHit {
     stock: Number(r.stock ?? 0),
     isAvailable: r.is_available,
     score,
+    heuristicScore,
+    vectorScore,
     presentation,
     groupKey,
   };
@@ -117,9 +147,12 @@ function rankHits(
       });
       const vector =
         useVector && typeof r.vector_score === "number" ? r.vector_score : 0;
-      const combined =
-        heuristic > 0 || vector > 0 ? combineScores(vector, heuristic) : 0;
-      return mapRow(r, combined);
+      // Piso de relevancia: sin evidencia heuristica, un vecino vectorial flojo
+      // no cuenta como coincidencia (reactiva la rama "sin coincidencias").
+      const combined = passesRelevanceFloor(vector, heuristic)
+        ? combineScores(vector, heuristic)
+        : 0;
+      return mapRow(r, combined, heuristic, vector);
     })
     .filter((h) => h.score > 0)
     .sort(
@@ -323,14 +356,23 @@ export async function checkProductAvailability(
       limit: 1,
       includeUnavailable: true,
     });
-    product = hits[0] ?? null;
+    const hit = hits[0] ?? null;
+    // Confirmar existencia exige que algun token del nombre case con el
+    // catalogo, o similitud semantica fuerte: el kNN siempre tiene un "mejor
+    // match" aunque el producto no exista, y responder found=true con el
+    // vecino mas cercano confirmaria productos inventados.
+    product =
+      hit &&
+      (hit.heuristicScore > 0 || hit.vectorScore >= PRODUCT_VECTOR_STRONG_SCORE)
+        ? hit
+        : null;
   }
 
   if (!product) return { found: false };
   return {
     found: true,
     product,
-    available: product.isAvailable && product.stock > 0,
+    available: isEffectivelyAvailable(product),
     stock: product.stock,
   };
 }

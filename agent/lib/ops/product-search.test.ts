@@ -7,6 +7,8 @@ import {
   extractPresentation,
   extractProductGroupKey,
   normalizeText,
+  passesRelevanceFloor,
+  PRODUCT_VECTOR_MIN_SCORE,
   scoreProduct,
   stemToken,
   tokenizeQuery,
@@ -348,5 +350,22 @@ describe("diversifyByGroup", () => {
 
   test("respeta el limite", () => {
     expect(diversifyByGroup(hits, (h) => h.group, 2).length).toBe(2);
+  });
+});
+
+describe("passesRelevanceFloor", () => {
+  test("con evidencia heuristica pasa aunque el vector sea flojo", () => {
+    expect(passesRelevanceFloor(0, 10)).toBe(true);
+    expect(passesRelevanceFloor(0.1, 1)).toBe(true);
+  });
+
+  test("solo-vectorial exige el piso minimo", () => {
+    expect(passesRelevanceFloor(PRODUCT_VECTOR_MIN_SCORE, 0)).toBe(true);
+    expect(passesRelevanceFloor(PRODUCT_VECTOR_MIN_SCORE - 0.01, 0)).toBe(false);
+    expect(passesRelevanceFloor(0.34, 0)).toBe(false);
+  });
+
+  test("sin evidencia alguna no pasa", () => {
+    expect(passesRelevanceFloor(0, 0)).toBe(false);
   });
 });

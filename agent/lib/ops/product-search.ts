@@ -330,6 +330,30 @@ export const PRODUCT_VECTOR_WEIGHT = 0.7;
 export const PRODUCT_HEURISTIC_WEIGHT = 0.3;
 
 /**
+ * Piso de similitud para hits SOLO vectoriales: el kNN siempre devuelve los
+ * vecinos mas cercanos aunque el catalogo no tenga nada parecido ("¿tienen
+ * pañales?" no debe devolver un desengrasante). Con evidencia heuristica
+ * (algun token de la consulta aparece en el producto) no se exige piso.
+ */
+export const PRODUCT_VECTOR_MIN_SCORE = 0.35;
+
+/**
+ * Similitud vectorial minima para dar por EXISTENTE un producto nombrado por el
+ * cliente cuando ningun token del nombre casa con el catalogo (confirmar
+ * existencia exige mas evidencia que listar resultados de busqueda).
+ */
+export const PRODUCT_VECTOR_STRONG_SCORE = 0.5;
+
+/** ¿El hit pasa el piso de relevancia? (ver PRODUCT_VECTOR_MIN_SCORE). */
+export function passesRelevanceFloor(
+  vectorScore: number,
+  heuristicScore: number,
+): boolean {
+  if (heuristicScore > 0) return true;
+  return vectorScore >= PRODUCT_VECTOR_MIN_SCORE;
+}
+
+/**
  * Combina score vectorial (0-1) con heuristica de scoreProduct (escala ~0-100+).
  * Match exacto de nombre (>=100) o SKU (>=80) siempre gana: protege
  * resolveOrderItems y checkProductAvailability con limit 1.
