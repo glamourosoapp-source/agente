@@ -51,7 +51,10 @@ function readTenantFromAuth(ctx: ToolCtxLike): TenantContext | null {
 function devFallbackTenant(): TenantContext | null {
   const organizationId = process.env.GLAM_DEV_ORGANIZATION_ID;
   if (!organizationId) return null;
-  return { organizationId, customerPhone: null };
+  // Telefono de cliente simulado para dev/evals (el flujo de pedidos lo exige).
+  // En produccion el canal siempre inyecta el telefono real via auth.
+  const customerPhone = process.env.GLAM_DEV_CUSTOMER_PHONE || null;
+  return { organizationId, customerPhone };
 }
 
 /**
