@@ -1,14 +1,14 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
-import { createOrder } from "../lib/ops/orders.js";
+import { createOrder, markOrderSyncPending } from "../lib/ops/orders.js";
 import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
 
 const itemSchema = z.object({
   productId: z.string().optional(),
   name: z.string().optional(),
-  quantity: z.number().positive(),
+  quantity: z.number().int().positive().max(500),
   notes: z.string().optional(),
 });
 
@@ -29,8 +29,8 @@ export default defineTool({
     contactName: z.string().optional(),
     customerNotes: z.string().optional(),
     paymentMethod: z.enum(["efectivo", "transferencia"]).optional(),
-    deliveryFee: z.number().min(0).optional(),
-    discount: z.number().min(0).optional(),
+    // Sin deliveryFee ni discount: el envio lo calcula la politica del negocio
+    // y los descuentos solo los autoriza una persona del equipo (handoff).
   }),
   async execute(input, ctx) {
     const tenant = getTenant(ctx);
@@ -46,8 +46,14 @@ export default defineTool({
         message: result.message,
       };
     }
-    // En un re-run el pedido ya existia; el Back ya fue notificado.
-    if (!result.replayed) await syncOrderCreated(tenant.organizationId, result.order.id);
+    // En un re-run el pedido ya existia; el Back ya fue notificado. Si falla,
+    // se deja marca en el pedido para poder reconciliar.
+    if (!result.replayed) {
+      const synced = await syncOrderCreated(tenant.organizationId, result.order.id);
+      if (!synced) {
+        await markOrderSyncPending(tenant, result.order.id).catch(() => {});
+      }
+    }
     return {
       ok: true,
       order: {

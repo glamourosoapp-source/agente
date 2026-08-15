@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { extractGoogleMapsUrls } from "../google-maps-url.js";
 import { getSql } from "../db.js";
 
@@ -245,10 +246,11 @@ export async function saveCustomerLocation(
 
   const rows = await sql<RawLocationRow[]>`
     INSERT INTO customer_locations (
-      organization_id, customer_id, label, street, colony, postal_code, city, zone,
+      id, organization_id, customer_id, label, street, colony, postal_code, city, zone,
       reference, google_maps_url, latitude, longitude, is_default, sort_order
     )
     VALUES (
+      ${randomUUID()},
       ${tenant.organizationId},
       ${customer.id},
       ${input.label?.trim() || (existingCount === 0 ? "Principal" : null)},

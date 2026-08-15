@@ -8,7 +8,9 @@ import {
   type CustomerRecord,
 } from "./customers.js";
 import { resolveDeliveryAddress } from "./customer-locations.js";
-import { getProductById, searchProducts } from "./products.js";
+import { getProductById, searchProducts, type ProductHit } from "./products.js";
+import { PRODUCT_VECTOR_STRONG_SCORE } from "./product-search.js";
+import { businessDateStamp } from "../time.js";
 import { getActiveConversationId } from "./conversations.js";
 import { deliveryFeeFor } from "./shipping.js";
 import { getDeliveryScheduleConfig } from "./delivery.js";
@@ -70,6 +72,52 @@ function enforceStockQuantity(): boolean {
   return (process.env.GLAM_ENFORCE_STOCK || "").toLowerCase() === "true";
 }
 
+/** Tope duro de unidades por item: por encima, el pedido va con un humano. */
+export const MAX_ITEM_QUANTITY = 500;
+
+/** Ventana del dedupe de pedidos identicos recientes (ver createOrder). */
+const DUPLICATE_ORDER_WINDOW_MINUTES = 5;
+
+/**
+ * Resuelve un item nombrado (sin productId) contra el catalogo. Exige evidencia
+ * real (tokens del nombre o similitud vectorial fuerte) — el kNN siempre tiene
+ * un "mejor match" y meter el vecino mas cercano al pedido cobra un producto
+ * que el cliente no pidio. Si la linea tiene varias presentaciones y el nombre
+ * no identifica una (sin match exacto de nombre/SKU), pide aclarar.
+ */
+async function resolveItemByName(
+  tenant: TenantContext,
+  name: string,
+): Promise<
+  | { status: "resolved"; product: ProductHit }
+  | { status: "ambiguous"; options: string[] }
+  | { status: "not_found" }
+> {
+  const hits = await searchProducts(tenant, name, {
+    limit: 5,
+    includeUnavailable: true,
+  });
+  const top = hits[0];
+  if (
+    !top ||
+    (top.heuristicScore <= 0 && top.vectorScore < PRODUCT_VECTOR_STRONG_SCORE)
+  ) {
+    return { status: "not_found" };
+  }
+  // Match exacto de nombre o SKU (combineScores >= 0.95) identifica la
+  // presentacion; si no, otras presentaciones de la misma linea = ambiguo.
+  if (top.score < 0.95) {
+    const siblings = hits.filter((h) => h.groupKey === top.groupKey);
+    if (siblings.length > 1) {
+      return {
+        status: "ambiguous",
+        options: siblings.map((h) => h.presentation ?? h.name),
+      };
+    }
+  }
+  return { status: "resolved", product: top };
+}
+
 /** Precio unitario segun el tier del cliente (retail/wholesale). */
 function unitPriceFor(
   pricingTier: string,
@@ -101,19 +149,29 @@ export async function resolveOrderItems(
   const unavailable: UnavailableItem[] = [];
 
   for (const item of items) {
+    const label = item.name || item.productId || "(item)";
     const quantity = Number(item.quantity) || 0;
-    if (quantity <= 0) {
-      unresolved.push(item.name || item.productId || "(item sin cantidad)");
+    if (quantity <= 0 || !Number.isInteger(quantity)) {
+      unresolved.push(`${label} (cantidad invalida: debe ser un entero positivo)`);
+      continue;
+    }
+    if (quantity > MAX_ITEM_QUANTITY) {
+      unresolved.push(
+        `${label} (cantidad ${quantity} excede el maximo de ${MAX_ITEM_QUANTITY}; un pedido asi lo atiende una persona del equipo)`,
+      );
       continue;
     }
 
     let product = item.productId ? await getProductById(tenant, item.productId) : null;
     if (!product && item.name) {
-      const hits = await searchProducts(tenant, item.name, {
-        limit: 1,
-        includeUnavailable: true,
-      });
-      product = hits[0] ?? null;
+      const byName = await resolveItemByName(tenant, item.name);
+      if (byName.status === "ambiguous") {
+        unresolved.push(
+          `${item.name} (hay varias presentaciones: ${byName.options.join(", ")}; pide al cliente elegir una y usa su id)`,
+        );
+        continue;
+      }
+      product = byName.status === "resolved" ? byName.product : null;
     }
 
     if (!product) {
@@ -261,12 +319,14 @@ export async function prepareOrder(
     };
   }
 
-  // Envio segun la politica del negocio (gratis desde GLAM_FREE_SHIPPING_MIN),
-  // salvo que la tool pase un costo explicito.
+  // Envio segun la politica del negocio (gratis desde GLAM_FREE_SHIPPING_MIN).
+  // El fee/descuento provisto se acota server-side: el modelo no decide montos
+  // (las tools ya no los exponen; esto protege a los callers internos).
   const subtotalOnly = resolved.reduce((sum, i) => sum + Number(i.total), 0);
-  const deliveryFee = args.deliveryFee ?? deliveryFeeFor(subtotalOnly);
+  const deliveryFee = Math.max(Number(args.deliveryFee ?? deliveryFeeFor(subtotalOnly)), 0);
+  const discount = Math.min(Math.max(Number(args.discount ?? 0), 0), subtotalOnly);
 
-  const { subtotal, total } = totals(resolved, deliveryFee, args.discount);
+  const { subtotal, total } = totals(resolved, deliveryFee, discount);
   return {
     ok: true,
     customer: {
@@ -281,7 +341,7 @@ export async function prepareOrder(
       items: resolved,
       subtotal,
       deliveryFee: Number(deliveryFee || 0),
-      discount: Number(args.discount || 0),
+      discount,
       total,
       unresolved,
     },
@@ -310,8 +370,7 @@ async function nextOrderNumber(
   // Serializa la numeracion por organizacion dentro de la transaccion: dos
   // pedidos concurrentes del mismo dia contarian lo mismo y duplicarian folio.
   await sql`SELECT pg_advisory_xact_lock(hashtext(${organizationId}))`;
-  const today = new Date();
-  const prefix = `ORD-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+  const prefix = `ORD-${businessDateStamp()}`;
   const rows = await sql<{ count: string }[]>`
     SELECT COUNT(*)::int AS count
     FROM orders
@@ -322,13 +381,10 @@ async function nextOrderNumber(
   return `${prefix}-${String(count + 1).padStart(4, "0")}`;
 }
 
-/**
- * Busca un pedido ya creado con la misma clave de idempotencia (re-run de un
- * paso interrumpido). Devuelve la misma forma que un pedido recien creado.
- */
-async function findOrderByIdempotencyKey(
+/** Carga un pedido ya persistido con la misma forma que un pedido recien creado. */
+async function loadCreatedOrderById(
   tenant: TenantContext,
-  idempotencyKey: string,
+  orderId: string,
 ): Promise<CreatedOrder | null> {
   const sql = getSql();
   const rows = await sql<
@@ -345,7 +401,7 @@ async function findOrderByIdempotencyKey(
     SELECT id, order_number, status, subtotal, total, delivery_address, scheduled_delivery_date::text
     FROM orders
     WHERE organization_id = ${tenant.organizationId}
-      AND idempotency_key = ${idempotencyKey}
+      AND id = ${orderId}
     LIMIT 1
   `;
   const order = rows[0];
@@ -365,7 +421,7 @@ async function findOrderByIdempotencyKey(
     SELECT product_id, product_name, unit, quantity, unit_price, total, notes
     FROM order_items
     WHERE order_id = ${order.id}
-    ORDER BY created_at ASC
+    ORDER BY created_at ASC, product_name ASC
   `;
 
   return {
@@ -386,6 +442,71 @@ async function findOrderByIdempotencyKey(
       notes: i.notes,
     })),
   };
+}
+
+/**
+ * Busca un pedido ya creado con la misma clave de idempotencia (re-run de un
+ * paso interrumpido). Devuelve la misma forma que un pedido recien creado.
+ */
+async function findOrderByIdempotencyKey(
+  tenant: TenantContext,
+  idempotencyKey: string,
+): Promise<CreatedOrder | null> {
+  const sql = getSql();
+  const rows = await sql<{ id: string }[]>`
+    SELECT id
+    FROM orders
+    WHERE organization_id = ${tenant.organizationId}
+      AND idempotency_key = ${idempotencyKey}
+    LIMIT 1
+  `;
+  const order = rows[0];
+  return order ? loadCreatedOrderById(tenant, order.id) : null;
+}
+
+/** Firma de items para comparar pedidos (independiente del orden). */
+function orderItemsSignature(
+  items: { productId: string | null; quantity: number; unitPrice: number }[],
+): string {
+  return items
+    .map((i) => `${i.productId ?? "?"}|${i.quantity}|${i.unitPrice}`)
+    .sort()
+    .join(";");
+}
+
+/**
+ * Red de seguridad contra duplicados ENTRE sesiones: la clave de idempotencia
+ * solo cubre re-runs del mismo turno (un re-dispatch del subagente genera una
+ * sesion hija con clave distinta). Si hace minutos se creo un pedido identico
+ * (mismo cliente, total e items), se devuelve ese en vez de duplicarlo.
+ */
+async function findRecentDuplicateOrder(
+  tenant: TenantContext,
+  customerId: string,
+  summary: OrderSummary,
+): Promise<CreatedOrder | null> {
+  const sql = getSql();
+  const candidates = await sql<{ id: string }[]>`
+    SELECT id
+    FROM orders
+    WHERE organization_id = ${tenant.organizationId}
+      AND customer_id = ${customerId}
+      AND status = ${ORDER_STATUS.NEW}
+      AND total = ${summary.total}
+      AND created_at > now() - make_interval(mins => ${DUPLICATE_ORDER_WINDOW_MINUTES})
+    ORDER BY created_at DESC
+    LIMIT 3
+  `;
+  if (candidates.length === 0) return null;
+
+  const wanted = orderItemsSignature(summary.items);
+  for (const candidate of candidates) {
+    const existing = await loadCreatedOrderById(tenant, candidate.id);
+    if (existing && orderItemsSignature(existing.items) === wanted) {
+      return existing;
+    }
+  }
+  return null;
 }
 
 /**
@@ -442,12 +563,17 @@ export async function createOrder(
   }
 
   const sql = getSql();
-  const conversationId = tenant.customerPhone
-    ? await getActiveConversationId(tenant, tenant.customerPhone)
-    : null;
   const summary = prepared.summary;
   const deliveryAddress = prepared.deliveryAddress!;
   const customerId = prepared.customer.id;
+
+  // Dedupe entre sesiones (la idempotencia por clave no cubre re-dispatches).
+  const duplicate = await findRecentDuplicateOrder(tenant, customerId, summary);
+  if (duplicate) return { ok: true, order: duplicate, replayed: true };
+
+  const conversationId = tenant.customerPhone
+    ? await getActiveConversationId(tenant, tenant.customerPhone)
+    : null;
 
   // Fecha de entrega asignada por la regla de corte del negocio (no negociable).
   const deliveryCfg = await getDeliveryScheduleConfig(tenant);
@@ -516,6 +642,26 @@ export async function createOrder(
       items: summary.items,
     },
   };
+}
+
+/**
+ * Deja rastro en el pedido cuando la notificacion al Back (order-sync) fallo:
+ * el pedido existe en Postgres pero el Dashboard no recibio la notificacion.
+ * Permite reconciliar buscando esta marca en internal_notes.
+ */
+export async function markOrderSyncPending(
+  tenant: TenantContext,
+  orderId: string,
+): Promise<void> {
+  const sql = getSql();
+  await sql`
+    UPDATE orders
+    SET internal_notes = COALESCE(internal_notes || E'\n', '') ||
+          '[agente] Notificacion al CRM pendiente: order-sync fallo al crear el pedido.',
+        updated_at = now()
+    WHERE organization_id = ${tenant.organizationId}
+      AND id = ${orderId}
+  `;
 }
 
 export interface OrderStatusInfo {

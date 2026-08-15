@@ -1,4 +1,7 @@
+import { randomUUID } from "node:crypto";
+import type Postgres from "postgres";
 import { getSql } from "../db.js";
+import { businessDateStamp } from "../time.js";
 import type { TenantContext } from "../tenant.js";
 import { findOrCreateCustomerByPhone } from "./customers.js";
 import { getActiveConversationId } from "./conversations.js";
@@ -6,6 +9,7 @@ import {
   createOrder,
   resolveOrderItems,
   type OrderItemInput,
+  type PaymentMethod,
   type ResolvedOrderItem,
 } from "./orders.js";
 
@@ -30,13 +34,19 @@ export interface CreatedQuote {
   validUntil: string;
 }
 
+/** Tipo del cliente transaccional que entrega `sql.begin`. */
+type TxSql = Postgres.TransactionSql<Record<string, never>>;
+
 /** Genera el siguiente quote_number del dia para la organizacion (COT-YYYYMMDD-NNNN). */
 async function nextQuoteNumber(
-  sql: ReturnType<typeof getSql>,
+  sql: TxSql,
   organizationId: string,
 ): Promise<string> {
-  const today = new Date();
-  const prefix = `COT-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+  // Serializa la numeracion por organizacion (clave distinta a la de orders):
+  // quotes tiene UNIQUE (organization_id, quote_number) y dos cotizaciones
+  // concurrentes contarian lo mismo y chocarian con 23505.
+  await sql`SELECT pg_advisory_xact_lock(hashtext(${organizationId + ":quotes"}))`;
+  const prefix = `COT-${businessDateStamp()}`;
   const rows = await sql<{ count: string }[]>`
     SELECT COUNT(*)::int AS count
     FROM quotes
@@ -93,19 +103,23 @@ export async function createQuote(
   const sql = getSql();
   const conversationId = await getActiveConversationId(tenant, tenant.customerPhone);
 
-  const rows = await sql<
-    { id: string; quote_number: string; status: string; valid_until: string }[]
-  >`
-    INSERT INTO quotes (
-      organization_id, customer_id, conversation_id, quote_number, status,
-      items, subtotal, tax, tax_rate, total, valid_until, notes
-    ) VALUES (
-      ${tenant.organizationId}, ${customer.id}, ${conversationId}, ${await nextQuoteNumber(sql, tenant.organizationId)}, ${QUOTE_STATUS.DRAFT},
-      ${sql.json(resolved as unknown as Parameters<typeof sql.json>[0])}, ${subtotal}, ${tax}, ${taxRate}, ${total}, ${validUntil}, ${args.notes ?? null}
-    )
-    RETURNING id, quote_number, status, valid_until
-  `;
-  const row = rows[0]!;
+  // Transaccion: el advisory lock de la numeracion es xact-scoped.
+  const row = await sql.begin(async (tx) => {
+    const quoteNumber = await nextQuoteNumber(tx, tenant.organizationId);
+    const rows = await tx<
+      { id: string; quote_number: string; status: string; valid_until: string }[]
+    >`
+      INSERT INTO quotes (
+        id, organization_id, customer_id, conversation_id, quote_number, status,
+        items, subtotal, tax, tax_rate, total, valid_until, notes
+      ) VALUES (
+        ${randomUUID()}, ${tenant.organizationId}, ${customer.id}, ${conversationId}, ${quoteNumber}, ${QUOTE_STATUS.DRAFT},
+        ${tx.json(resolved as unknown as Parameters<typeof tx.json>[0])}, ${subtotal}, ${tax}, ${taxRate}, ${total}, ${validUntil}, ${args.notes ?? null}
+      )
+      RETURNING id, quote_number, status, valid_until
+    `;
+    return rows[0]!;
+  });
 
   return {
     ok: true,
@@ -132,11 +146,13 @@ export async function convertQuoteToOrder(
     quoteNumber: string;
     deliveryAddress?: string | null;
     locationId?: string | null;
+    contactName?: string | null;
+    paymentMethod?: PaymentMethod | null;
     /** Clave de idempotencia (sesion+turno+input); evita duplicar en re-runs. */
     idempotencyKey?: string | null;
   },
 ): Promise<
-  | { ok: true; orderNumber: string; orderId: string; total: number }
+  | { ok: true; orderNumber: string; orderId: string; total: number; replayed?: boolean }
   | { ok: false; needsAddress?: boolean; message: string }
 > {
   const sql = getSql();
@@ -175,6 +191,8 @@ export async function convertQuoteToOrder(
     items,
     deliveryAddress: args.deliveryAddress,
     locationId: args.locationId,
+    contactName: args.contactName,
+    paymentMethod: args.paymentMethod,
     idempotencyKey: args.idempotencyKey,
   });
   if (!created.ok) {
@@ -196,5 +214,6 @@ export async function convertQuoteToOrder(
     orderNumber: created.order.orderNumber,
     orderId: created.order.id,
     total: created.order.total,
+    replayed: created.replayed,
   };
 }

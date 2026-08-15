@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
-import { createOrder } from "../lib/ops/orders.js";
+import { createOrder, markOrderSyncPending } from "../lib/ops/orders.js";
 import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
 import { markProspectConverted } from "../lib/ops/prospects.js";
@@ -9,7 +9,12 @@ import { markProspectConverted } from "../lib/ops/prospects.js";
 const itemSchema = z.object({
   productId: z.string().optional().describe("Id del producto (preferido)."),
   name: z.string().optional().describe("Nombre del producto si no tienes el id."),
-  quantity: z.number().positive().describe("Cantidad solicitada."),
+  quantity: z
+    .number()
+    .int()
+    .positive()
+    .max(500)
+    .describe("Cantidad solicitada (entera; pedidos mayores a 500 van con un humano)."),
   notes: z.string().optional().describe("Nota del item (opcional)."),
 });
 
@@ -40,12 +45,8 @@ export default defineTool({
       .enum(["efectivo", "transferencia"])
       .optional()
       .describe("Forma de pago acordada con el cliente (efectivo o transferencia)."),
-    deliveryFee: z
-      .number()
-      .min(0)
-      .optional()
-      .describe("Costo de envio SOLO para casos especiales; normalmente se calcula solo."),
-    discount: z.number().min(0).optional(),
+    // Sin deliveryFee ni discount: el envio lo calcula la politica del negocio
+    // y los descuentos solo los autoriza una persona del equipo (handoff).
   }),
   async execute(input, ctx) {
     const tenant = getTenant(ctx);
@@ -63,8 +64,14 @@ export default defineTool({
     }
 
     // Notifica al Back para realtime + notificacion en el Dashboard (best-effort).
-    // En un re-run el pedido ya existia; el Back ya fue notificado.
-    if (!result.replayed) await syncOrderCreated(tenant.organizationId, result.order.id);
+    // En un re-run el pedido ya existia; el Back ya fue notificado. Si falla,
+    // se deja marca en el pedido para poder reconciliar.
+    if (!result.replayed) {
+      const synced = await syncOrderCreated(tenant.organizationId, result.order.id);
+      if (!synced) {
+        await markOrderSyncPending(tenant, result.order.id).catch(() => {});
+      }
+    }
 
     // Si el telefono corresponde a un prospecto de campaña, cierra el funnel:
     // converted + enlace al customer (best-effort, no afecta el pedido).

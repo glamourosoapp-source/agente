@@ -6,7 +6,12 @@ import { prepareOrder } from "../lib/ops/orders.js";
 const itemSchema = z.object({
   productId: z.string().optional().describe("Id del producto (preferido, de search_products)."),
   name: z.string().optional().describe("Nombre del producto si no tienes el id."),
-  quantity: z.number().positive().describe("Cantidad solicitada."),
+  quantity: z
+    .number()
+    .int()
+    .positive()
+    .max(500)
+    .describe("Cantidad solicitada (entera; pedidos mayores a 500 van con un humano)."),
   notes: z.string().optional().describe("Nota del item (opcional)."),
 });
 
@@ -20,9 +25,13 @@ export default defineTool({
     "crearlo. Usala despues de search_products y antes de confirm_order. Si el " +
     "cliente no tiene direccion guardada y no la pasas, devuelve needsAddress: " +
     "pidela antes de continuar. Si algun producto esta agotado devuelve " +
-    "unavailable: avisa al cliente y ofrece alternativas. El costo de envio se " +
-    "calcula solo (gratis desde el minimo del negocio). Muestra el resumen al " +
-    "cliente y pide su confirmacion explicita.",
+    "unavailable: avisa al cliente y ofrece alternativas. Si summary.unresolved " +
+    "trae items, esos NO quedaron en el pedido (no se encontraron o hay que " +
+    "aclarar presentacion/cantidad): dilo al cliente SIEMPRE antes de seguir; " +
+    "no confirmes un pedido incompleto en silencio. El costo de envio se " +
+    "calcula solo (gratis desde el minimo del negocio) y no puedes aplicar " +
+    "descuentos (eso lo autoriza una persona del equipo). Muestra el resumen " +
+    "al cliente y pide su confirmacion explicita.",
   inputSchema: z.object({
     items: z.array(itemSchema).min(1).describe("Productos del pedido."),
     deliveryAddress: z
@@ -39,12 +48,8 @@ export default defineTool({
       .enum(["efectivo", "transferencia"])
       .optional()
       .describe("Forma de pago si el cliente ya la indico (efectivo o transferencia)."),
-    deliveryFee: z
-      .number()
-      .min(0)
-      .optional()
-      .describe("Costo de envio SOLO para casos especiales; normalmente se calcula solo."),
-    discount: z.number().min(0).optional().describe("Descuento aplicado (opcional)."),
+    // Sin deliveryFee ni discount: el envio lo calcula la politica del negocio
+    // y los descuentos solo los autoriza una persona del equipo (handoff).
   }),
   async execute(input, ctx) {
     const tenant = getTenant(ctx);

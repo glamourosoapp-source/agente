@@ -19,6 +19,15 @@ export function nowInBusinessTz(): string {
   }).format(new Date());
 }
 
+/**
+ * Sello YYYYMMDD de "hoy" en la zona del negocio, para folios (ORD-/COT-).
+ * Con la fecha UTC del server el prefijo rodaria al dia siguiente a las 18:00
+ * hora de Mexico.
+ */
+export function businessDateStamp(date: Date = new Date()): string {
+  return isoDateInTz(date, businessTimezone()).replaceAll("-", "");
+}
+
 /** Fecha YYYY-MM-DD de un Date en la zona del negocio. */
 function isoDateInTz(date: Date, tz: string): string {
   // en-CA formatea como YYYY-MM-DD.

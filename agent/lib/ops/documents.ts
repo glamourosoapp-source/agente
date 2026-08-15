@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { getSql } from "../db.js";
 import type { TenantContext } from "../tenant.js";
 import { findCustomerByPhone } from "./customers.js";
@@ -74,9 +75,9 @@ export async function registerDocument(
 
   const rows = await sql<RawDocRow[]>`
     INSERT INTO documents (
-      organization_id, conversation_id, customer_id, type, file_url, file_name, status
+      id, organization_id, conversation_id, customer_id, type, file_url, file_name, status
     ) VALUES (
-      ${tenant.organizationId}, ${conversationId}, ${customer?.id ?? null}, ${type},
+      ${randomUUID()}, ${tenant.organizationId}, ${conversationId}, ${customer?.id ?? null}, ${type},
       ${fileUrl}, ${args.fileName ?? null}, ${DOCUMENT_STATUS.PENDING_REVIEW}
     )
     RETURNING id, type, status, file_name, file_url, created_at
