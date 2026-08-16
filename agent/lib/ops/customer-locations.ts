@@ -247,7 +247,8 @@ export async function saveCustomerLocation(
   const rows = await sql<RawLocationRow[]>`
     INSERT INTO customer_locations (
       id, organization_id, customer_id, label, street, colony, postal_code, city, zone,
-      reference, google_maps_url, latitude, longitude, is_default, sort_order
+      reference, google_maps_url, latitude, longitude, is_default, sort_order,
+      created_at, updated_at
     )
     VALUES (
       ${randomUUID()},
@@ -264,7 +265,9 @@ export async function saveCustomerLocation(
       ${latitude ?? null},
       ${longitude ?? null},
       ${shouldBeDefault},
-      ${existingCount}
+      ${existingCount},
+      NOW(),
+      NOW()
     )
     RETURNING id, customer_id, label, street, colony, postal_code, city, zone, reference,
               google_maps_url, latitude, longitude, is_default, sort_order

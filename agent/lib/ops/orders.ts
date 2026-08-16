@@ -592,12 +592,14 @@ export async function createOrder(
         INSERT INTO orders (
           id, organization_id, customer_id, conversation_id, order_number, status,
           delivery_address, subtotal, delivery_fee, discount, total, customer_notes,
-          payment_method, source, idempotency_key, scheduled_delivery_date, created_by
+          payment_method, source, idempotency_key, scheduled_delivery_date, created_by,
+          created_at, updated_at
         ) VALUES (
           ${orderId}, ${tenant.organizationId}, ${customerId}, ${conversationId}, ${orderNumber}, ${ORDER_STATUS.NEW},
           ${deliveryAddress}, ${summary.subtotal}, ${summary.deliveryFee}, ${summary.discount},
           ${summary.total}, ${args.customerNotes ?? null},
-          ${args.paymentMethod ?? null}, 'whatsapp', ${args.idempotencyKey ?? null}, ${scheduledDeliveryDate}, ${createdBy}
+          ${args.paymentMethod ?? null}, 'whatsapp', ${args.idempotencyKey ?? null}, ${scheduledDeliveryDate}, ${createdBy},
+          NOW(), NOW()
         )
         RETURNING id, order_number, status
       `;
@@ -606,13 +608,28 @@ export async function createOrder(
       for (const item of summary.items) {
         await tx`
           INSERT INTO order_items (
-            id, order_id, product_id, product_name, unit, quantity, unit_price, total, notes
+            id, order_id, product_id, product_name, unit, quantity, unit_price, total, notes,
+            created_at, updated_at
           ) VALUES (
             ${randomUUID()}, ${header.id}, ${item.productId}, ${item.productName}, ${item.unit},
-            ${item.quantity}, ${item.unitPrice}, ${item.total}, ${item.notes}
+            ${item.quantity}, ${item.unitPrice}, ${item.total}, ${item.notes},
+            NOW(), NOW()
           )
         `;
       }
+
+      // Acumulados del cliente: mismo criterio que `_touchCustomer` del Back
+      // (order.service.ts) para que un pedido de WhatsApp cuente igual que uno
+      // del panel. Va en la misma transaccion que el pedido.
+      await tx`
+        UPDATE customers
+        SET last_order_at = NOW(),
+            total_orders = COALESCE(total_orders, 0) + 1,
+            total_spent = COALESCE(total_spent, 0) + ${summary.total},
+            updated_at = NOW()
+        WHERE id = ${customerId}
+          AND organization_id = ${tenant.organizationId}
+      `;
 
       return header;
     });

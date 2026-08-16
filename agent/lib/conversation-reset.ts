@@ -46,8 +46,15 @@ export async function getGeneration(customerPhone: string, scope: string): Promi
   const redis = getRedis();
   const key = genKey(scope, customerPhone);
   if (redis) {
-    const value = await redis.get<number>(key);
-    return typeof value === "number" ? value : Number(value) || 0;
+    try {
+      const value = await redis.get<number>(key);
+      return typeof value === "number" ? value : Number(value) || 0;
+    } catch (error) {
+      // Redis caida: mejor perder un reinicio pendiente que tumbar el turno.
+      console.warn(
+        `[conversation-reset] Redis fallo leyendo generacion, usando fallback en memoria: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   return genFallback.get(key) ?? 0;
 }
@@ -74,8 +81,14 @@ export async function resetConversation(customerPhone: string, scope: string): P
   const redis = getRedis();
   const key = genKey(scope, customerPhone);
   if (redis) {
-    await redis.incr(key);
-    return;
+    try {
+      await redis.incr(key);
+      return;
+    } catch (error) {
+      console.warn(
+        `[conversation-reset] Redis fallo incrementando generacion, usando fallback en memoria: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   genFallback.set(key, (genFallback.get(key) ?? 0) + 1);
 }

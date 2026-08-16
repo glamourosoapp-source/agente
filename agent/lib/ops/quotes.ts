@@ -111,10 +111,11 @@ export async function createQuote(
     >`
       INSERT INTO quotes (
         id, organization_id, customer_id, conversation_id, quote_number, status,
-        items, subtotal, tax, tax_rate, total, valid_until, notes
+        items, subtotal, tax, tax_rate, total, valid_until, notes, created_at, updated_at
       ) VALUES (
         ${randomUUID()}, ${tenant.organizationId}, ${customer.id}, ${conversationId}, ${quoteNumber}, ${QUOTE_STATUS.DRAFT},
-        ${tx.json(resolved as unknown as Parameters<typeof tx.json>[0])}, ${subtotal}, ${tax}, ${taxRate}, ${total}, ${validUntil}, ${args.notes ?? null}
+        ${tx.json(resolved as unknown as Parameters<typeof tx.json>[0])}, ${subtotal}, ${tax}, ${taxRate}, ${total}, ${validUntil}, ${args.notes ?? null},
+        NOW(), NOW()
       )
       RETURNING id, quote_number, status, valid_until
     `;

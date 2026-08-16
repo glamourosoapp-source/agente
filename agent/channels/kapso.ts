@@ -8,7 +8,7 @@ import { sendKapsoText } from "../lib/kapso.js";
 import { toE164 } from "../lib/phone.js";
 import { recordInbound, recordInboundMedia, recordOutbound, recordOptOut, clearTyping } from "../lib/bridge.js";
 import { isOptOutMessage, optOutFarewell } from "../lib/opt-out.js";
-import { getConversationState } from "../lib/ops/conversations.js";
+import { getConversationState, shouldPauseAgent } from "../lib/ops/conversations.js";
 import { debounceInboundMessage } from "../lib/message-debounce.js";
 import {
   isResetKeyword,
@@ -110,18 +110,15 @@ type SendFn = (
  *
  * Siempre lee el estado actual en Postgres (post-debounce). No usar el inbound
  * del momento t0: un humano puede pausar/escalar durante la ventana de debounce.
- * Regla: responde solo si is_agent_active && !needs_human_review.
+ * Regla: responde solo si is_agent_active && !needs_human_review && el chat no
+ * esta tomado por una persona (status 'human').
  */
 async function isAgentPaused(
   tenant: TenantContext,
   customerPhone: string,
 ): Promise<boolean> {
   try {
-    const state = await getConversationState(tenant, customerPhone);
-    return (
-      !!state &&
-      (state.isAgentActive === false || state.needsHumanReview === true)
-    );
+    return shouldPauseAgent(await getConversationState(tenant, customerPhone));
   } catch {
     // Ante duda (sin estado disponible), no bloquear la atencion del cliente.
     return false;

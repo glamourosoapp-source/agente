@@ -131,8 +131,8 @@ export async function findOrCreateCustomerByPhone(
 
   const customerId = randomUUID();
   const rows = await sql<RawCustomerRow[]>`
-    INSERT INTO customers (id, organization_id, name, phone, phone_normalized, source, created_by, team_id)
-    VALUES (${customerId}, ${tenant.organizationId}, ${name}, ${phone}, ${phoneNormalized}, 'whatsapp', ${createdBy}, ${teamId})
+    INSERT INTO customers (id, organization_id, name, phone, phone_normalized, source, created_by, team_id, created_at, updated_at)
+    VALUES (${customerId}, ${tenant.organizationId}, ${name}, ${phone}, ${phoneNormalized}, 'whatsapp', ${createdBy}, ${teamId}, NOW(), NOW())
     RETURNING id, name, phone, email, street, colony, postal_code, city, zone, address, pricing_tier
   `;
   return mapRow(rows[0]!);

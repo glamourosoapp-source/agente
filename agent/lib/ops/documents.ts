@@ -75,10 +75,12 @@ export async function registerDocument(
 
   const rows = await sql<RawDocRow[]>`
     INSERT INTO documents (
-      id, organization_id, conversation_id, customer_id, type, file_url, file_name, status
+      id, organization_id, conversation_id, customer_id, type, file_url, file_name, status,
+      created_at, updated_at
     ) VALUES (
       ${randomUUID()}, ${tenant.organizationId}, ${conversationId}, ${customer?.id ?? null}, ${type},
-      ${fileUrl}, ${args.fileName ?? null}, ${DOCUMENT_STATUS.PENDING_REVIEW}
+      ${fileUrl}, ${args.fileName ?? null}, ${DOCUMENT_STATUS.PENDING_REVIEW},
+      NOW(), NOW()
     )
     RETURNING id, type, status, file_name, file_url, created_at
   `;

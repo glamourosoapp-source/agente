@@ -159,7 +159,7 @@ function debounceInMemory<T>(
  * Encola un mensaje y devuelve una promesa que resuelve tras el debounce.
  * Pasar esa promesa a `waitUntil` del canal para que Vercel no corte el trabajo.
  */
-export function debounceInboundMessage<T>(
+export async function debounceInboundMessage<T>(
   key: string,
   text: string,
   meta: T,
@@ -168,7 +168,16 @@ export function debounceInboundMessage<T>(
 ): Promise<void> {
   const redis = getRedis();
   if (redis) {
-    return debounceWithRedis(redis, key, text, meta, onFlush, debounceMs);
+    try {
+      return await debounceWithRedis(redis, key, text, meta, onFlush, debounceMs);
+    } catch (error) {
+      // Redis caida (p. ej. base borrada) no debe dejar al agente mudo:
+      // degradamos al debounce en memoria de esta instancia.
+      console.warn(
+        `[message-debounce] Redis fallo, usando fallback en memoria: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return debounceInMemory(key, text, meta, onFlush, debounceMs);
+    }
   }
   return debounceInMemory(key, text, meta, onFlush, debounceMs);
 }

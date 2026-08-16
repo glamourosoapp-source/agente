@@ -36,11 +36,12 @@ export async function getAgentUserId(tenant: TenantContext): Promise<string> {
     // rechaza usuarios inactivos antes de verificar la contraseña.
     // team_id: subquery al equipo "Glamouroso IA"; NULL si aún no existe.
     await sql`
-      INSERT INTO users (id, organization_id, name, email, password_hash, role, is_active, team_id)
+      INSERT INTO users (id, organization_id, name, email, password_hash, role, is_active, team_id, created_at, updated_at)
       VALUES (
         ${randomUUID()}, ${tenant.organizationId}, 'Agente IA', ${email},
         ${`disabled:${randomUUID()}`}, ${AGENT_ROLE}, false,
-        (SELECT id FROM teams WHERE organization_id = ${tenant.organizationId} AND name = ${AGENT_TEAM_NAME} LIMIT 1)
+        (SELECT id FROM teams WHERE organization_id = ${tenant.organizationId} AND name = ${AGENT_TEAM_NAME} LIMIT 1),
+        NOW(), NOW()
       )
       ON CONFLICT (email) DO NOTHING
     `;
