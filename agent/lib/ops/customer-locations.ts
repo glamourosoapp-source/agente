@@ -140,6 +140,7 @@ async function syncCustomerDefaultCache(tenant: TenantContext, customerId: strin
 }
 
 export interface SaveCustomerLocationInput {
+  locationId?: string | null;
   label?: string | null;
   street?: string | null;
   colony?: string | null;
@@ -199,6 +200,58 @@ export async function saveCustomerLocation(
       );
   const googleMapsUrl = mapsFromText[0] || input.googleMapsUrl || null;
 
+  const sql = getSql();
+
+  // Con locationId se actualiza la ubicacion existente (ej. agregarle el link
+  // de Maps o el pin despues de guardarla): merge campo a campo, nunca borra.
+  if (input.locationId) {
+    const existing = await findCustomerLocationById(tenant, customer.id, input.locationId);
+    if (!existing) {
+      return { ok: false, message: "No encontre esa ubicacion guardada del cliente." };
+    }
+
+    const shouldPromote = input.isDefault === true && !existing.isDefault;
+    if (shouldPromote) {
+      await sql`
+        UPDATE customer_locations
+        SET is_default = false, updated_at = now()
+        WHERE organization_id = ${tenant.organizationId}
+          AND customer_id = ${customer.id}
+          AND id <> ${existing.id}
+          AND deleted_at IS NULL
+      `;
+    }
+
+    const rows = await sql<RawLocationRow[]>`
+      UPDATE customer_locations
+      SET label = ${input.label?.trim() || existing.label},
+          street = ${input.street?.trim() || existing.street},
+          colony = ${input.colony?.trim() || existing.colony},
+          postal_code = ${input.postalCode?.trim() || existing.postalCode},
+          city = ${input.city?.trim() || existing.city},
+          zone = ${input.zone?.trim() || existing.zone},
+          reference = ${reference || existing.reference},
+          google_maps_url = ${googleMapsUrl || existing.googleMapsUrl},
+          latitude = ${latitude ?? existing.latitude},
+          longitude = ${longitude ?? existing.longitude},
+          is_default = ${shouldPromote || existing.isDefault},
+          updated_at = now()
+      WHERE organization_id = ${tenant.organizationId}
+        AND customer_id = ${customer.id}
+        AND id = ${existing.id}
+        AND deleted_at IS NULL
+      RETURNING id, customer_id, label, street, colony, postal_code, city, zone, reference,
+                google_maps_url, latitude, longitude, is_default, sort_order
+    `;
+    if (!rows[0]) {
+      return { ok: false, message: "No encontre esa ubicacion guardada del cliente." };
+    }
+    if (shouldPromote || existing.isDefault) {
+      await syncCustomerDefaultCache(tenant, customer.id);
+    }
+    return { ok: true, location: mapLocationRow(rows[0]) };
+  }
+
   const hasStructured =
     Boolean(input.street?.trim()) &&
     Boolean(input.colony?.trim()) &&
@@ -217,7 +270,6 @@ export async function saveCustomerLocation(
     };
   }
 
-  const sql = getSql();
   const countRows = await sql<{ count: string }[]>`
     SELECT COUNT(*)::int AS count
     FROM customer_locations

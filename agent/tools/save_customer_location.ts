@@ -10,8 +10,17 @@ export default defineTool({
   description:
     "Guarda una ubicacion de entrega del cliente. Acepta calle/colonia/ciudad, " +
     "referencias, URL de Google Maps y/o coordenadas del pin de WhatsApp. Maximo 3 " +
-    "ubicaciones por cliente. Devuelve la direccion formateada para confirmarla.",
+    "ubicaciones por cliente. Con locationId actualiza una ubicacion ya guardada " +
+    "(ej. agregarle el link de Maps o el pin) en vez de crear otra. Devuelve la " +
+    "direccion formateada para confirmarla.",
   inputSchema: z.object({
+    locationId: z
+      .string()
+      .optional()
+      .describe(
+        "ID de una ubicacion ya guardada (de list_customer_locations) para actualizarla, " +
+          "p. ej. agregarle el link de Google Maps o el pin. Sin locationId crea una nueva.",
+      ),
     label: z.string().optional().describe("Etiqueta: Casa, Local, Bodega, etc."),
     street: z.string().optional().describe("Calle y numero."),
     colony: z.string().optional().describe("Colonia."),
