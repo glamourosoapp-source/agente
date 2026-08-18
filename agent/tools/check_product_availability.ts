@@ -33,7 +33,9 @@ export default defineTool({
         price: result.product.price,
       },
       available: result.available,
-      stock: result.stock,
+      // Ilimitado: el producto no depende del inventario, nunca se agota.
+      unlimitedStock: result.unlimitedStock,
+      stock: result.unlimitedStock ? null : result.stock,
     };
   },
 });

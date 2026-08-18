@@ -199,6 +199,8 @@ export interface ScorableProduct {
   sku: string | null;
   isAvailable: boolean;
   stock: number;
+  /** true = sin control de inventario; ausente se asume ilimitado. */
+  unlimitedStock?: boolean;
   categoryName?: string | null;
   groupKey?: string | null;
   /** Texto indexable desde metadata (useCases, tags, etc.). */
@@ -240,7 +242,7 @@ export function automotiveRelevanceBoost(queryTokens: string[], p: ScorableProdu
  * description +15; por token (via tokensMatch: tolerante a genero y
  * sinonimos): en name +10, prefijo en name +6, substring en name +4, en
  * description +5, substring en description +3, substring en sku +6; bonus de
- * cobertura 0-10; disponible con stock +1. Score 0 = sin coincidencia (se
+ * cobertura 0-10; disponible (con stock o ilimitado) +1. Score 0 = sin coincidencia (se
  * descarta).
  */
 export function scoreProduct(
@@ -293,7 +295,7 @@ export function scoreProduct(
     score += (matched / queryTokens.length) * 10;
   }
   score += automotiveRelevanceBoost(queryTokens, p);
-  if (score > 0 && p.isAvailable && p.stock > 0) score += 1;
+  if (score > 0 && p.isAvailable && (p.unlimitedStock !== false || p.stock > 0)) score += 1;
   return score;
 }
 

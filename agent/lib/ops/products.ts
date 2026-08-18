@@ -23,6 +23,8 @@ export interface ProductHit {
   price: number;
   wholesalePrice: number | null;
   stock: number;
+  /** true = producto sin control de inventario: existencias infinitas. */
+  unlimitedStock: boolean;
   isAvailable: boolean;
   /** Relevancia de busqueda (0 fuera de searchProducts). */
   score: number;
@@ -45,6 +47,7 @@ interface RawProductRow {
   price: string | number;
   wholesale_price: string | number | null;
   stock: string | number | null;
+  unlimited_stock?: boolean | null;
   is_available: boolean;
   variants: Record<string, unknown> | null;
   metadata?: Record<string, unknown> | null;
@@ -61,12 +64,20 @@ export function stockEnforced(): boolean {
   return (process.env.GLAM_ENFORCE_STOCK || "").toLowerCase() === "true";
 }
 
-/** Disponibilidad efectiva de un producto segun la politica de inventario. */
+/**
+ * Disponibilidad efectiva de un producto segun la politica de inventario.
+ * `unlimitedStock` (columna products.unlimited_stock) exenta al producto del
+ * control de existencias aunque el enforcement global este prendido: nunca se
+ * agota. Si la bandera no viene, se asume ilimitado (default de la columna).
+ */
 export function isEffectivelyAvailable(p: {
   isAvailable: boolean;
   stock: number;
+  unlimitedStock?: boolean;
 }): boolean {
-  return p.isAvailable && (!stockEnforced() || p.stock > 0);
+  if (!p.isAvailable) return false;
+  if (p.unlimitedStock !== false) return true;
+  return !stockEnforced() || p.stock > 0;
 }
 
 const CANDIDATE_LIMIT = 500;
@@ -98,6 +109,7 @@ function mapRow(
     price: Number(r.price ?? 0),
     wholesalePrice: r.wholesale_price == null ? null : Number(r.wholesale_price),
     stock: Number(r.stock ?? 0),
+    unlimitedStock: r.unlimited_stock !== false,
     isAvailable: r.is_available,
     score,
     heuristicScore,
@@ -141,6 +153,7 @@ function rankHits(
         sku: r.sku,
         isAvailable: r.is_available,
         stock: Number(r.stock ?? 0),
+        unlimitedStock: r.unlimited_stock !== false,
         categoryName: r.category_name ?? null,
         groupKey: rowGroupKey(r),
         metadataText: rowMetadataText(r.metadata),
@@ -179,7 +192,7 @@ async function fetchHeuristicCandidates(
   // productos relevantes con nombre tardio en el alfabeto (p. ej. MAX COLOR).
   for (const pattern of patterns) {
     const rows = await sql<RawProductRow[]>`
-      SELECT p.id, p.sku, p.name, p.description, p.unit, p.price, p.wholesale_price, p.stock, p.is_available, p.variants, p.metadata,
+      SELECT p.id, p.sku, p.name, p.description, p.unit, p.price, p.wholesale_price, p.stock, p.unlimited_stock, p.is_available, p.variants, p.metadata,
         pc.name AS category_name
       FROM products p
       LEFT JOIN product_categories pc ON pc.id = p.category_id
@@ -213,7 +226,7 @@ async function fetchVectorCandidates(
   const literal = toPgVectorLiteral(queryEmbedding);
   try {
     return await sql<RawProductRow[]>`
-      SELECT p.id, p.sku, p.name, p.description, p.unit, p.price, p.wholesale_price, p.stock, p.is_available, p.variants, p.metadata,
+      SELECT p.id, p.sku, p.name, p.description, p.unit, p.price, p.wholesale_price, p.stock, p.unlimited_stock, p.is_available, p.variants, p.metadata,
         pc.name AS category_name,
         CASE
           WHEN p.search_embedding IS NOT NULL
@@ -321,7 +334,7 @@ export async function getProductById(
 ): Promise<ProductHit | null> {
   const sql = getSql();
   const rows = await sql<RawProductRow[]>`
-    SELECT id, sku, name, description, unit, price, wholesale_price, stock, is_available, variants
+    SELECT id, sku, name, description, unit, price, wholesale_price, stock, unlimited_stock, is_available, variants
     FROM products
     WHERE organization_id = ${tenant.organizationId}
       AND deleted_at IS NULL
@@ -346,6 +359,7 @@ export async function checkProductAvailability(
       product: ProductHit;
       available: boolean;
       stock: number;
+      unlimitedStock: boolean;
     }
 > {
   let product: ProductHit | null = null;
@@ -374,5 +388,6 @@ export async function checkProductAvailability(
     product,
     available: isEffectivelyAvailable(product),
     stock: product.stock,
+    unlimitedStock: product.unlimitedStock,
   };
 }

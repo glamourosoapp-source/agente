@@ -67,6 +67,9 @@ export interface UnavailableItem {
  * Si GLAM_ENFORCE_STOCK=true, ademas de la bandera is_available se exige que la
  * cantidad pedida quepa en el stock registrado. Apagado por defecto porque hay
  * catalogos que no llevan inventario (stock=0 = "no rastreado").
+ *
+ * Los productos con `unlimited_stock` quedan exentos aunque este prendido:
+ * son existencias infinitas (se surten a pedido) y nunca se agotan.
  */
 function enforceStockQuantity(): boolean {
   return (process.env.GLAM_ENFORCE_STOCK || "").toLowerCase() === "true";
@@ -190,7 +193,7 @@ export async function resolveOrderItems(
       });
       continue;
     }
-    if (enforceStockQuantity() && quantity > product.stock) {
+    if (enforceStockQuantity() && !product.unlimitedStock && quantity > product.stock) {
       unavailable.push({
         productName: product.name,
         requested: quantity,
