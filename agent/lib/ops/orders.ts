@@ -9,6 +9,12 @@ import {
 } from "./customers.js";
 import { resolveDeliveryAddress } from "./customer-locations.js";
 import { getProductById, searchProducts, type ProductHit } from "./products.js";
+import {
+  applyBidonLine,
+  carriesBidon,
+  findBidonProduct,
+  type BidonLine,
+} from "./bidon.js";
 import { PRODUCT_VECTOR_STRONG_SCORE } from "./product-search.js";
 import { businessDateStamp } from "../time.js";
 import { getActiveConversationId } from "./conversations.js";
@@ -53,6 +59,8 @@ export interface OrderSummary {
   discount: number;
   total: number;
   unresolved: string[];
+  /** Bidones que la politica agrego al pedido (null si no lleva). */
+  bidones?: BidonLine | null;
 }
 
 /** Item pedido pero sin stock/disponibilidad suficiente. */
@@ -146,10 +154,13 @@ export async function resolveOrderItems(
   resolved: ResolvedOrderItem[];
   unresolved: string[];
   unavailable: UnavailableItem[];
+  /** Envases de 20 L del pedido: cada uno agrega un bidon (ver bidon.ts). */
+  bidonUnits: number;
 }> {
   const resolved: ResolvedOrderItem[] = [];
   const unresolved: string[] = [];
   const unavailable: UnavailableItem[] = [];
+  let bidonUnits = 0;
 
   for (const item of items) {
     const label = item.name || item.productId || "(item)";
@@ -203,6 +214,8 @@ export async function resolveOrderItems(
       continue;
     }
 
+    if (carriesBidon(product)) bidonUnits += quantity;
+
     const unitPrice = unitPriceFor(pricingTier, product.price, product.wholesalePrice);
     resolved.push({
       productId: product.id,
@@ -215,7 +228,7 @@ export async function resolveOrderItems(
     });
   }
 
-  return { resolved, unresolved, unavailable };
+  return { resolved, unresolved, unavailable, bidonUnits };
 }
 
 function totals(items: ResolvedOrderItem[], deliveryFee = 0, discount = 0) {
@@ -290,7 +303,7 @@ export async function prepareOrder(
     };
   }
 
-  const { resolved, unresolved, unavailable } = await resolveOrderItems(
+  const { resolved, unresolved, unavailable, bidonUnits } = await resolveOrderItems(
     tenant,
     args.items,
     customer.pricingTier,
@@ -322,14 +335,25 @@ export async function prepareOrder(
     };
   }
 
+  // Bidon a cambio: cada envase de 20 L agrega un bidon al pedido. Se resuelve
+  // aqui (no en el prompt) para que el total nunca dependa de que el modelo se
+  // acuerde; el aviso al cliente lo da la tool con `bidonNotice`.
+  const bidon = await findBidonProduct(tenant).catch(() => null);
+  const { items: withBidon, bidonLine } = applyBidonLine(
+    resolved,
+    bidonUnits,
+    bidon,
+    customer.pricingTier,
+  );
+
   // Envio segun la politica del negocio (gratis desde GLAM_FREE_SHIPPING_MIN).
   // El fee/descuento provisto se acota server-side: el modelo no decide montos
   // (las tools ya no los exponen; esto protege a los callers internos).
-  const subtotalOnly = resolved.reduce((sum, i) => sum + Number(i.total), 0);
+  const subtotalOnly = withBidon.reduce((sum, i) => sum + Number(i.total), 0);
   const deliveryFee = Math.max(Number(args.deliveryFee ?? deliveryFeeFor(subtotalOnly)), 0);
   const discount = Math.min(Math.max(Number(args.discount ?? 0), 0), subtotalOnly);
 
-  const { subtotal, total } = totals(resolved, deliveryFee, discount);
+  const { subtotal, total } = totals(withBidon, deliveryFee, discount);
   return {
     ok: true,
     customer: {
@@ -341,12 +365,13 @@ export async function prepareOrder(
     deliveryAddress: address,
     paymentMethod: args.paymentMethod ?? null,
     summary: {
-      items: resolved,
+      items: withBidon,
       subtotal,
       deliveryFee: Number(deliveryFee || 0),
       discount,
       total,
       unresolved,
+      bidones: bidonLine,
     },
   };
 }
@@ -360,6 +385,8 @@ export interface CreatedOrder {
   deliveryAddress: string;
   scheduledDeliveryDate: string | null;
   items: ResolvedOrderItem[];
+  /** Bidones que la politica agrego al pedido (null si no lleva). */
+  bidones?: BidonLine | null;
 }
 
 /** Tipo del cliente transaccional que entrega `sql.begin`. */
@@ -660,6 +687,7 @@ export async function createOrder(
       deliveryAddress,
       scheduledDeliveryDate,
       items: summary.items,
+      bidones: summary.bidones ?? null,
     },
   };
 }

@@ -36,6 +36,8 @@ export interface ProductHit {
   presentation: string | null;
   /** Linea de producto (agrupa presentaciones, p. ej. "DETERCLORO"). */
   groupKey: string;
+  /** Rubro del catalogo (product_categories.name); null si no tiene. */
+  categoryName: string | null;
 }
 
 interface RawProductRow {
@@ -116,6 +118,7 @@ function mapRow(
     vectorScore,
     presentation,
     groupKey,
+    categoryName: r.category_name ?? null,
   };
 }
 
@@ -334,11 +337,13 @@ export async function getProductById(
 ): Promise<ProductHit | null> {
   const sql = getSql();
   const rows = await sql<RawProductRow[]>`
-    SELECT id, sku, name, description, unit, price, wholesale_price, stock, unlimited_stock, is_available, variants
-    FROM products
-    WHERE organization_id = ${tenant.organizationId}
-      AND deleted_at IS NULL
-      AND id = ${productId}
+    SELECT p.id, p.sku, p.name, p.description, p.unit, p.price, p.wholesale_price, p.stock, p.unlimited_stock, p.is_available, p.variants,
+      pc.name AS category_name
+    FROM products p
+    LEFT JOIN product_categories pc ON pc.id = p.category_id
+    WHERE p.organization_id = ${tenant.organizationId}
+      AND p.deleted_at IS NULL
+      AND p.id = ${productId}
     LIMIT 1
   `;
   const row = rows[0];

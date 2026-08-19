@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
 import { createOrder, markOrderSyncPending } from "../lib/ops/orders.js";
+import { bidonNotice } from "../lib/ops/bidon.js";
 import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
 import { markProspectConverted } from "../lib/ops/prospects.js";
@@ -93,11 +94,16 @@ export default defineTool({
         deliveryAddress: result.order.deliveryAddress,
         scheduledDeliveryDate: result.order.scheduledDeliveryDate,
         items: result.order.items,
+        bidones: result.order.bidones ?? null,
       },
       note:
         "Confirma al cliente el numero de pedido, el total y la fecha de entrega " +
-        "asignada (scheduledDeliveryDate); la fecha no se negocia. Preguntale que " +
-        "ventana horaria prefiere y registrala con schedule_delivery.",
+        "asignada (scheduledDeliveryDate); la fecha no se negocia. En la nota del " +
+        "pedido lista TODOS los items, bidones incluidos. Preguntale que " +
+        "ventana horaria prefiere y registrala con schedule_delivery." +
+        (bidonNotice(result.order.bidones ?? null)
+          ? ` ${bidonNotice(result.order.bidones ?? null)}`
+          : ""),
     };
   },
 });

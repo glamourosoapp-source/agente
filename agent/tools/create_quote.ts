@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
 import { createQuote } from "../lib/ops/quotes.js";
+import { bidonNotice } from "../lib/ops/bidon.js";
 
 const itemSchema = z.object({
   productId: z.string().optional(),
@@ -31,6 +32,13 @@ export default defineTool({
     const tenant = getTenant(ctx);
     const result = await createQuote(tenant, input);
     if (!result.ok) return { ok: false, message: result.message };
-    return { ok: true, quote: result.quote, note: "Comparte el numero de cotizacion y el total con el cliente." };
+    const notice = bidonNotice(result.quote.bidones ?? null);
+    return {
+      ok: true,
+      quote: result.quote,
+      note:
+        "Comparte el numero de cotizacion y el total con el cliente." +
+        (notice ? ` ${notice}` : ""),
+    };
   },
 });

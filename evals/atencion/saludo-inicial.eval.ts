@@ -17,7 +17,11 @@ export default defineEval({
         "La respuesta es un unico mensaje breve de bienvenida de Glamouroso " +
           "(productos de limpieza) que pregunta que necesita el cliente, sin " +
           "enumerar categorias inventadas, sin mencionar ropa u otros rubros " +
-          "ajenos al negocio, y sin narrar pasos internos como 'dejame ver quien eres'.",
+          "ajenos al negocio, y sin narrar pasos internos como 'dejame ver quien eres'. " +
+          "NO ofrece mandar el catalogo, un PDF ni una lista de precios (no existen); " +
+          "si menciona que vendemos, es en forma de rubros reales de limpieza " +
+          "(limpiadores/quimicos, escobas y trapeadores, papel y desechables, " +
+          "plasticos, equipo de seguridad, envases).",
       )
       .atLeast(0.6);
   },

@@ -5,6 +5,7 @@ import { businessDateStamp } from "../time.js";
 import type { TenantContext } from "../tenant.js";
 import { findOrCreateCustomerByPhone } from "./customers.js";
 import { getActiveConversationId } from "./conversations.js";
+import { applyBidonLine, findBidonProduct, type BidonLine } from "./bidon.js";
 import {
   createOrder,
   resolveOrderItems,
@@ -32,6 +33,8 @@ export interface CreatedQuote {
   tax: number;
   total: number;
   validUntil: string;
+  /** Bidones que la politica agrego a la cotizacion (null si no lleva). */
+  bidones?: BidonLine | null;
 }
 
 /** Tipo del cliente transaccional que entrega `sql.begin`. */
@@ -83,7 +86,7 @@ export async function createQuote(
     name: args.contactName,
   });
 
-  const { resolved, unresolved } = await resolveOrderItems(
+  const { resolved, unresolved, bidonUnits } = await resolveOrderItems(
     tenant,
     args.items,
     customer.pricingTier,
@@ -92,7 +95,17 @@ export async function createQuote(
     return { ok: false, message: `No pude encontrar en el catalogo: ${unresolved.join(", ")}.` };
   }
 
-  const subtotal = resolved.reduce((sum, i) => sum + Number(i.total), 0);
+  // Misma politica que el pedido: cada envase de 20 L lleva su bidon, para que
+  // el total cotizado sea el mismo que se cobrara (ver bidon.ts).
+  const bidon = await findBidonProduct(tenant).catch(() => null);
+  const { items, bidonLine } = applyBidonLine(
+    resolved,
+    bidonUnits,
+    bidon,
+    customer.pricingTier,
+  );
+
+  const subtotal = items.reduce((sum, i) => sum + Number(i.total), 0);
   const taxRate = Number(args.taxRate ?? 0);
   const tax = Math.round(subtotal * (taxRate / 100) * 100) / 100;
   const total = subtotal + tax;
@@ -114,7 +127,7 @@ export async function createQuote(
         items, subtotal, tax, tax_rate, total, valid_until, notes, created_at, updated_at
       ) VALUES (
         ${randomUUID()}, ${tenant.organizationId}, ${customer.id}, ${conversationId}, ${quoteNumber}, ${QUOTE_STATUS.DRAFT},
-        ${tx.json(resolved as unknown as Parameters<typeof tx.json>[0])}, ${subtotal}, ${tax}, ${taxRate}, ${total}, ${validUntil}, ${args.notes ?? null},
+        ${tx.json(items as unknown as Parameters<typeof tx.json>[0])}, ${subtotal}, ${tax}, ${taxRate}, ${total}, ${validUntil}, ${args.notes ?? null},
         NOW(), NOW()
       )
       RETURNING id, quote_number, status, valid_until
@@ -128,11 +141,12 @@ export async function createQuote(
       id: row.id,
       quoteNumber: row.quote_number,
       status: row.status,
-      items: resolved,
+      items,
       subtotal,
       tax,
       total,
       validUntil: String(row.valid_until),
+      bidones: bidonLine,
     },
   };
 }

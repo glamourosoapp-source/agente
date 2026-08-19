@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
 import { prepareOrder } from "../lib/ops/orders.js";
+import { bidonNotice } from "../lib/ops/bidon.js";
 
 const itemSchema = z.object({
   productId: z.string().optional().describe("Id del producto (preferido, de search_products)."),
@@ -30,8 +31,11 @@ export default defineTool({
     "aclarar presentacion/cantidad): dilo al cliente SIEMPRE antes de seguir; " +
     "no confirmes un pedido incompleto en silencio. El costo de envio se " +
     "calcula solo (gratis desde el minimo del negocio) y no puedes aplicar " +
-    "descuentos (eso lo autoriza una persona del equipo). Muestra el resumen " +
-    "al cliente y pide su confirmacion explicita.",
+    "descuentos (eso lo autoriza una persona del equipo). Si el pedido lleva " +
+    "envases de 20 L, el resumen ya incluye un BIDON por cada uno " +
+    "(summary.bidones): menciona cuantos son y avisa que si los entrega a " +
+    "cambio el chofer no se los cobra. Muestra el resumen al cliente y pide su " +
+    "confirmacion explicita.",
   inputSchema: z.object({
     items: z.array(itemSchema).min(1).describe("Productos del pedido."),
     deliveryAddress: z
@@ -70,7 +74,10 @@ export default defineTool({
       summary: result.summary,
       note:
         "Muestra este resumen al cliente (incluye el envio). Antes de confirm_order, " +
-        "pregunta la forma de pago (efectivo o transferencia) si aun no la sabes.",
+        "pregunta la forma de pago (efectivo o transferencia) si aun no la sabes." +
+        (bidonNotice(result.summary?.bidones ?? null)
+          ? ` ${bidonNotice(result.summary?.bidones ?? null)}`
+          : ""),
     };
   },
 });
