@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getTenant } from "../lib/tenant.js";
 import { prepareOrder } from "../lib/ops/orders.js";
 import { bidonNotice } from "../lib/ops/bidon.js";
+import { requiresHumanPayment, TRANSFER_PREPARE_NOTICE } from "../lib/payment-policy.js";
 
 const itemSchema = z.object({
   productId: z.string().optional().describe("Id del producto (preferido, de search_products)."),
@@ -31,7 +32,9 @@ export default defineTool({
     "aclarar presentacion/cantidad): dilo al cliente SIEMPRE antes de seguir; " +
     "no confirmes un pedido incompleto en silencio. El costo de envio se " +
     "calcula solo (gratis desde el minimo del negocio) y no puedes aplicar " +
-    "descuentos (eso lo autoriza una persona del equipo). Si el pedido lleva " +
+    "descuentos (eso lo autoriza una persona del equipo). Si el cliente quiere " +
+    "pagar por transferencia devuelve requiresHuman: arma el resumen igual, pero " +
+    "NO confirmes el pedido, deriva con handoff_to_human. Si el pedido lleva " +
     "envases de 20 L, el resumen ya incluye un BIDON por cada uno " +
     "(summary.bidones): menciona cuantos son y avisa que si los entrega a " +
     "cambio el chofer no se los cobra. Muestra el resumen al cliente y pide su " +
@@ -51,7 +54,10 @@ export default defineTool({
     paymentMethod: z
       .enum(["efectivo", "transferencia"])
       .optional()
-      .describe("Forma de pago si el cliente ya la indico (efectivo o transferencia)."),
+      .describe(
+        "Forma de pago si el cliente ya la indico. Con 'transferencia' el pedido " +
+          "no lo cierras tu: se deriva a una persona.",
+      ),
     // Sin deliveryFee ni discount: el envio lo calcula la politica del negocio
     // y los descuentos solo los autoriza una persona del equipo (handoff).
   }),
@@ -66,15 +72,21 @@ export default defineTool({
         message: result.message,
       };
     }
+    // El resumen se devuelve igual aunque el pago sea por transferencia: sirve
+    // como brief para la persona que retome la conversacion.
+    const transferHandoff = requiresHumanPayment(result.paymentMethod);
     return {
       ok: true,
+      requiresHuman: transferHandoff,
       customer: result.customer,
       deliveryAddress: result.deliveryAddress,
       paymentMethod: result.paymentMethod,
       summary: result.summary,
       note:
-        "Muestra este resumen al cliente (incluye el envio). Antes de confirm_order, " +
-        "pregunta la forma de pago (efectivo o transferencia) si aun no la sabes." +
+        (transferHandoff
+          ? `Muestra este resumen al cliente (incluye el envio). ${TRANSFER_PREPARE_NOTICE}`
+          : "Muestra este resumen al cliente (incluye el envio) y pide su confirmacion " +
+            "explicita; el pago es en efectivo.") +
         (bidonNotice(result.summary?.bidones ?? null)
           ? ` ${bidonNotice(result.summary?.bidones ?? null)}`
           : ""),

@@ -14,9 +14,10 @@ import { escalate } from "../lib/bridge.js";
 export default defineTool({
   description:
     "Deriva la conversacion a una persona del equipo (peticion explicita de " +
-    "humano, cliente molesto, queja, pedido complejo, problema de pago, baja " +
-    "confianza o caso especial fuera de tu alcance). Notifica al equipo y pausa " +
-    "al agente. Avisa SIEMPRE al cliente que lo conectaras con una persona.",
+    "humano, cliente molesto, queja, pedido complejo, problema de pago, pago por " +
+    "TRANSFERENCIA, peticion de FACTURA, baja confianza o caso especial fuera de " +
+    "tu alcance). Notifica al equipo y pausa al agente. Avisa SIEMPRE al cliente " +
+    "que lo conectaras con una persona.",
   inputSchema: z.object({
     reason: z
       .enum([
@@ -25,12 +26,15 @@ export default defineTool({
         "complaint",
         "complex_order",
         "payment_issue",
+        "payment_transfer",
+        "invoice_request",
         "low_confidence",
         "special_case",
       ])
       .describe(
         "Motivo: user_request (pidio humano), cannot_answer (no se puede resolver), " +
           "complaint (queja), complex_order (pedido complejo), payment_issue (problema de pago), " +
+          "payment_transfer (quiere pagar por transferencia), invoice_request (pide factura), " +
           "low_confidence (baja confianza), special_case (caso especial).",
       ),
     summary: z.string().min(3).describe("Resumen breve del caso para el asistente humano."),

@@ -6,6 +6,7 @@ import { bidonNotice } from "../lib/ops/bidon.js";
 import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
 import { markProspectConverted } from "../lib/ops/prospects.js";
+import { requiresHumanPayment, TRANSFER_HANDOFF_MESSAGE } from "../lib/payment-policy.js";
 
 const itemSchema = z.object({
   productId: z.string().optional().describe("Id del producto (preferido)."),
@@ -22,16 +23,17 @@ const itemSchema = z.object({
 /**
  * Crea el pedido en el CRM tras la confirmacion explicita del cliente. Es el
  * paso final del flujo canonico (search_products -> prepare_order -> confirmacion
- * -> confirm_order). Reaplica la regla de direccion obligatoria.
+ * -> confirm_order). Reaplica la regla de direccion obligatoria y la de pago:
+ * solo efectivo; transferencia se deriva a una persona sin crear el pedido.
  */
 export default defineTool({
   description:
     "Crea el pedido en el CRM. LLAMALA SOLO despues de que el cliente confirme " +
-    "explicitamente el resumen de prepare_order y de conocer su forma de pago " +
-    "(efectivo o transferencia). Si falta direccion devuelve needsAddress: pidela " +
-    "y no insistas en crear. Si un producto se agoto devuelve unavailable. Tras " +
-    "crearlo, dale al cliente el numero de pedido; si paga por transferencia, " +
-    "pidele el comprobante (se registra con process_document).",
+    "explicitamente el resumen de prepare_order. Solo cierra pedidos en efectivo: " +
+    "si el cliente quiere pagar por transferencia devuelve requiresHuman y NO crea " +
+    "el pedido (hay que derivar con handoff_to_human). Si falta direccion devuelve " +
+    "needsAddress: pidela y no insistas en crear. Si un producto se agoto devuelve " +
+    "unavailable. Tras crearlo, dale al cliente el numero de pedido.",
   inputSchema: z.object({
     items: z.array(itemSchema).min(1).describe("Productos confirmados del pedido."),
     deliveryAddress: z.string().optional().describe("Direccion de entrega (si se dio en el chat)."),
@@ -45,12 +47,20 @@ export default defineTool({
     paymentMethod: z
       .enum(["efectivo", "transferencia"])
       .optional()
-      .describe("Forma de pago acordada con el cliente (efectivo o transferencia)."),
+      .describe(
+        "Forma de pago acordada con el cliente. Solo 'efectivo' crea el pedido; " +
+          "'transferencia' se rechaza y se deriva a una persona.",
+      ),
     // Sin deliveryFee ni discount: el envio lo calcula la politica del negocio
     // y los descuentos solo los autoriza una persona del equipo (handoff).
   }),
   async execute(input, ctx) {
     const tenant = getTenant(ctx);
+    // Politica de pago: la transferencia la cierra una persona (datos bancarios y
+    // validacion del comprobante). Se corta antes de crear nada.
+    if (requiresHumanPayment(input.paymentMethod)) {
+      return { ok: false, requiresHuman: true, message: TRANSFER_HANDOFF_MESSAGE };
+    }
     const result = await createOrder(tenant, {
       ...input,
       idempotencyKey: orderIdempotencyKey(ctx, input),

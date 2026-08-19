@@ -5,16 +5,20 @@ import { convertQuoteToOrder } from "../lib/ops/quotes.js";
 import { markOrderSyncPending } from "../lib/ops/orders.js";
 import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
+import { requiresHumanPayment, TRANSFER_HANDOFF_MESSAGE } from "../lib/payment-policy.js";
 
 /**
  * Convierte una cotizacion existente en pedido. Reaplica la regla de direccion
- * obligatoria (si falta, devuelve needsAddress).
+ * obligatoria (si falta, devuelve needsAddress) y la de pago (solo efectivo;
+ * transferencia se deriva a una persona sin crear el pedido).
  */
 export default defineTool({
   description:
     "Convierte una cotizacion (COT-...) en pedido cuando el cliente decide " +
-    "comprar. Requiere direccion (devuelve needsAddress si falta). Tras convertir, " +
-    "dale al cliente el numero de pedido.",
+    "comprar. Requiere direccion (devuelve needsAddress si falta). Solo cierra " +
+    "pedidos en efectivo: con transferencia devuelve requiresHuman y no convierte " +
+    "nada (hay que derivar con handoff_to_human). Tras convertir, dale al cliente " +
+    "el numero de pedido.",
   inputSchema: z.object({
     quoteNumber: z.string().min(3).describe("Numero de la cotizacion a convertir (COT-...)."),
     deliveryAddress: z.string().optional().describe("Direccion de entrega si se dio en el chat."),
@@ -23,10 +27,17 @@ export default defineTool({
     paymentMethod: z
       .enum(["efectivo", "transferencia"])
       .optional()
-      .describe("Forma de pago acordada con el cliente (efectivo o transferencia)."),
+      .describe(
+        "Forma de pago acordada con el cliente. Solo 'efectivo' convierte la " +
+          "cotizacion; 'transferencia' se rechaza y se deriva a una persona.",
+      ),
   }),
   async execute(input, ctx) {
     const tenant = getTenant(ctx);
+    // Politica de pago: la transferencia la cierra una persona del equipo.
+    if (requiresHumanPayment(input.paymentMethod)) {
+      return { ok: false, requiresHuman: true, message: TRANSFER_HANDOFF_MESSAGE };
+    }
     const result = await convertQuoteToOrder(tenant, {
       ...input,
       idempotencyKey: orderIdempotencyKey(ctx, input),

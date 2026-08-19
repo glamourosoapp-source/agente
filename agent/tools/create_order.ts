@@ -4,6 +4,7 @@ import { getTenant } from "../lib/tenant.js";
 import { createOrder, markOrderSyncPending } from "../lib/ops/orders.js";
 import { orderIdempotencyKey } from "../lib/idempotency.js";
 import { syncOrderCreated } from "../lib/bridge.js";
+import { requiresHumanPayment, TRANSFER_HANDOFF_MESSAGE } from "../lib/payment-policy.js";
 
 const itemSchema = z.object({
   productId: z.string().optional(),
@@ -15,13 +16,16 @@ const itemSchema = z.object({
 /**
  * Crea un pedido directamente (caso excepcional). El flujo normal es
  * prepare_order -> confirm_order; usa create_order solo cuando el cliente pide
- * algo claro y ya confirmado en un solo paso. Reaplica la regla de direccion.
+ * algo claro y ya confirmado en un solo paso. Reaplica la regla de direccion y
+ * la de pago (solo efectivo; transferencia se deriva a una persona).
  */
 export default defineTool({
   description:
     "Crea un pedido en el CRM en un solo paso (caso EXCEPCIONAL). Prefiere " +
     "prepare_order + confirm_order. Requiere direccion (devuelve needsAddress si " +
-    "falta). Solo usala cuando el pedido ya este claro y confirmado por el cliente.",
+    "falta). Solo cierra pedidos en efectivo: con transferencia devuelve " +
+    "requiresHuman y no crea nada (hay que derivar con handoff_to_human). Solo " +
+    "usala cuando el pedido ya este claro y confirmado por el cliente.",
   inputSchema: z.object({
     items: z.array(itemSchema).min(1),
     deliveryAddress: z.string().optional(),
@@ -34,6 +38,10 @@ export default defineTool({
   }),
   async execute(input, ctx) {
     const tenant = getTenant(ctx);
+    // Politica de pago: la transferencia la cierra una persona del equipo.
+    if (requiresHumanPayment(input.paymentMethod)) {
+      return { ok: false, requiresHuman: true, message: TRANSFER_HANDOFF_MESSAGE };
+    }
     const result = await createOrder(tenant, {
       ...input,
       idempotencyKey: orderIdempotencyKey(ctx, input),
