@@ -25,21 +25,30 @@ function item(partial: Partial<ResolvedOrderItem> = {}): ResolvedOrderItem {
 
 describe("carriesBidon", () => {
   test("un liquido de 20 L lleva bidon", () => {
-    expect(carriesBidon({ presentation: "20L", categoryName: "Líquidos" })).toBe(true);
-    expect(carriesBidon({ presentation: "20 L", categoryName: "liquidos" })).toBe(true);
-    expect(carriesBidon({ presentation: "20L", categoryName: "Limpieza a granel" })).toBe(true);
+    expect(carriesBidon({ presentation: "20L", categoryName: "Líquidos", bidon: null })).toBe(true);
+    expect(carriesBidon({ presentation: "20 L", categoryName: "liquidos", bidon: null })).toBe(true);
+    expect(carriesBidon({ presentation: "20L", categoryName: "Limpieza a granel", bidon: null })).toBe(true);
   });
 
   test("los articulos de 20 L que no son liquidos NO llevan bidon", () => {
     // CESTO PAPELERO 20 LITROS, CUBETA 20 LITROS, PALANGANA 20 LITROS.
-    expect(carriesBidon({ presentation: "20L", categoryName: "Plásticos" })).toBe(false);
-    expect(carriesBidon({ presentation: "20L", categoryName: "Jarciería" })).toBe(false);
+    expect(carriesBidon({ presentation: "20L", categoryName: "Plásticos", bidon: null })).toBe(false);
+    expect(carriesBidon({ presentation: "20L", categoryName: "Jarciería", bidon: null })).toBe(false);
   });
 
   test("otras presentaciones no llevan bidon automatico (10 L se pregunta)", () => {
-    expect(carriesBidon({ presentation: "10L", categoryName: "Líquidos" })).toBe(false);
-    expect(carriesBidon({ presentation: "1L", categoryName: "Líquidos" })).toBe(false);
-    expect(carriesBidon({ presentation: null, categoryName: "Líquidos" })).toBe(false);
+    expect(carriesBidon({ presentation: "10L", categoryName: "Líquidos", bidon: null })).toBe(false);
+    expect(carriesBidon({ presentation: "1L", categoryName: "Líquidos", bidon: null })).toBe(false);
+    expect(carriesBidon({ presentation: null, categoryName: "Líquidos", bidon: null })).toBe(false);
+  });
+
+  test("el override del catalogo (variants.bidon) manda sobre la regla", () => {
+    // 10 L marcado a mano: sale en bidon de 20 L y se cobra automatico.
+    expect(carriesBidon({ presentation: "10L", categoryName: "Líquidos", bidon: true })).toBe(true);
+    // Producto sin presentacion pero marcado.
+    expect(carriesBidon({ presentation: null, categoryName: "Líquidos", bidon: true })).toBe(true);
+    // 20 L liquido con el override apagado no cobra bidon.
+    expect(carriesBidon({ presentation: "20L", categoryName: "Líquidos", bidon: false })).toBe(false);
   });
 });
 

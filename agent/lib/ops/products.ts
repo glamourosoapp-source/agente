@@ -38,6 +38,12 @@ export interface ProductHit {
   groupKey: string;
   /** Rubro del catalogo (product_categories.name); null si no tiene. */
   categoryName: string | null;
+  /**
+   * Override manual de bidon (variants.bidon del catalogo): true = siempre
+   * cobra bidon (hay 10L que salen en bidon de 20), false = nunca, null = regla
+   * automatica de 20L (ver bidon.ts).
+   */
+  bidon: boolean | null;
 }
 
 interface RawProductRow {
@@ -119,7 +125,17 @@ function mapRow(
     presentation,
     groupKey,
     categoryName: r.category_name ?? null,
+    bidon: bidonOverride(variants),
   };
+}
+
+/** variants.bidon como boolean (acepta "true"/"false" de formularios); null = sin override. */
+function bidonOverride(variants: Record<string, unknown>): boolean | null {
+  const value = variants.bidon;
+  if (typeof value === "boolean") return value;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
 }
 
 function rowGroupKey(r: RawProductRow): string {

@@ -48,10 +48,12 @@ Sigue SIEMPRE este orden. No te saltes pasos ni inventes datos.
    (ORD-...), cada producto con cantidad y precio, total, dirección y fecha
    asignada.
    - **Bidón a cambio (20 L)**: las tools ya suman un `BIDON` por cada envase de
-     20 L (`summary.bidones`): lista esa línea en el resumen y avisa que si
-     entrega los vacíos a cambio el chofer no se los cobra. En **10 L** sí
-     pregunta y agrega el `BIDON` solo si NO entrega uno. Nunca restes nada por
-     el bidón (política en `answer_faq`).
+     20 L y por los productos de 10 L marcados en el catálogo que salen en bidón
+     de 20 L (`summary.bidones`): lista esa línea en el resumen y avisa que si
+     entrega los vacíos a cambio el chofer no se los cobra. En los **10 L** que
+     no vengan ya contados en `summary.bidones` sí pregunta y agrega el `BIDON`
+     solo si NO entrega uno. Nunca restes nada por el bidón (política en
+     `answer_faq`).
 6. **Entrega**: la fecha la asigna el sistema automáticamente al crear el pedido
    (regla de corte del negocio) y viene en `scheduledDeliveryDate` de
    `confirm_order`. **Confírmasela al cliente tal cual** — no ofrezcas fechas ni

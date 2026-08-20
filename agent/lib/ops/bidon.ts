@@ -75,11 +75,14 @@ function normalizeLoose(value: string | null | undefined): string {
 
 /**
  * True si comprar ese producto agrega un bidon al pedido: envase de 20 L de
- * una linea liquida.
+ * una linea liquida, o producto marcado a mano en el catalogo
+ * (`variants.bidon` -> `ProductHit.bidon`; hay 10L que salen en bidon de 20).
+ * El override tambien apaga la regla (`bidon: false`).
  */
 export function carriesBidon(
-  product: Pick<ProductHit, "presentation" | "categoryName">,
+  product: Pick<ProductHit, "presentation" | "categoryName" | "bidon">,
 ): boolean {
+  if (product.bidon != null) return product.bidon;
   if (!BIDON_PRESENTATIONS.has(normalize(product.presentation).toUpperCase())) {
     return false;
   }
