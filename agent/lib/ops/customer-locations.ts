@@ -333,26 +333,58 @@ export async function saveCustomerLocation(
   return { ok: true, location };
 }
 
-export async function resolveDeliveryAddress(
+/**
+ * Texto de entrega de una ubicacion guardada (espejo de
+ * `formatCustomerLocationAddress` de shared en el Back/Front): la direccion
+ * estructurada y, si la ubicacion es solo un pin o un link, el link de Maps.
+ */
+export function locationDeliveryText(location: CustomerLocationRecord): string {
+  const formatted = location.formattedAddress?.trim();
+  if (formatted) return formatted;
+  const maps = location.googleMapsUrl?.trim();
+  if (maps) return maps;
+  if (location.latitude != null && location.longitude != null) {
+    return `https://www.google.com/maps?q=${location.latitude},${location.longitude}`;
+  }
+  return "";
+}
+
+/**
+ * Direccion efectiva del pedido y, cuando sale de un domicilio guardado, su id
+ * (queda en `orders.customer_location_id` para saber a cual se entrego).
+ */
+export async function resolveDeliveryLocation(
   customer: CustomerRecord,
   args: {
     deliveryAddress?: string | null;
     locationId?: string | null;
   },
   tenant: TenantContext,
-): Promise<string | null> {
+): Promise<{ address: string | null; locationId: string | null }> {
   const provided = String(args.deliveryAddress || "").trim();
-  if (provided) return provided;
+  if (provided) {
+    // Direccion dictada en el chat: si es igual a una guardada, se atribuye a
+    // esa ubicacion; si no, va como texto suelto.
+    const locations = await listCustomerLocations(tenant, customer.id);
+    const same = locations.find((l) => locationDeliveryText(l) === provided);
+    return { address: provided, locationId: same?.id ?? null };
+  }
 
   if (args.locationId) {
     const location = await findCustomerLocationById(tenant, customer.id, args.locationId);
-    if (location?.formattedAddress?.trim()) return location.formattedAddress.trim();
+    const text = location ? locationDeliveryText(location) : "";
+    if (location && text) return { address: text, locationId: location.id };
   }
 
   const locations = await listCustomerLocations(tenant, customer.id);
   const defaultLocation = locations.find((l) => l.isDefault) ?? locations[0];
-  if (defaultLocation?.formattedAddress?.trim()) return defaultLocation.formattedAddress.trim();
+  const defaultText = defaultLocation ? locationDeliveryText(defaultLocation) : "";
+  if (defaultLocation && defaultText) {
+    return { address: defaultText, locationId: defaultLocation.id };
+  }
 
-  if (customer.formattedAddress?.trim()) return customer.formattedAddress.trim();
-  return customer.hasAddress ? customer.formattedAddress : null;
+  if (customer.formattedAddress?.trim()) {
+    return { address: customer.formattedAddress.trim(), locationId: null };
+  }
+  return { address: customer.hasAddress ? customer.formattedAddress : null, locationId: null };
 }

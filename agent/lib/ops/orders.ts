@@ -7,7 +7,7 @@ import {
   findOrCreateCustomerByPhone,
   type CustomerRecord,
 } from "./customers.js";
-import { resolveDeliveryAddress } from "./customer-locations.js";
+import { resolveDeliveryLocation } from "./customer-locations.js";
 import { getProductById, searchProducts, type ProductHit } from "./products.js";
 import {
   applyBidonLine,
@@ -237,14 +237,17 @@ function totals(items: ResolvedOrderItem[], deliveryFee = 0, discount = 0) {
   return { subtotal, total: Math.max(total, 0) };
 }
 
-/** Direccion efectiva del pedido: la provista, por locationId o la guardada del cliente. */
+/**
+ * Direccion efectiva del pedido (la provista, por locationId o la guardada del
+ * cliente) junto con el id del domicilio del que salio, si salio de uno.
+ */
 async function effectiveAddress(
   tenant: TenantContext,
   provided: string | null | undefined,
   customer: CustomerRecord,
   locationId?: string | null,
-): Promise<string | null> {
-  return resolveDeliveryAddress(customer, { deliveryAddress: provided, locationId }, tenant);
+): Promise<{ address: string | null; locationId: string | null }> {
+  return resolveDeliveryLocation(customer, { deliveryAddress: provided, locationId }, tenant);
 }
 
 export interface PrepareOrderResult {
@@ -254,6 +257,8 @@ export interface PrepareOrderResult {
   customer?: { id: string; name: string; phone: string; pricingTier: string };
   summary?: OrderSummary;
   deliveryAddress?: string | null;
+  /** Domicilio guardado del que salio la direccion (null si es texto suelto). */
+  deliveryLocationId?: string | null;
   paymentMethod?: PaymentMethod | null;
   message?: string;
 }
@@ -287,7 +292,12 @@ export async function prepareOrder(
     name: args.contactName,
   });
 
-  const address = await effectiveAddress(tenant, args.deliveryAddress, customer, args.locationId);
+  const { address, locationId: deliveryLocationId } = await effectiveAddress(
+    tenant,
+    args.deliveryAddress,
+    customer,
+    args.locationId,
+  );
   if (!address) {
     return {
       ok: false,
@@ -363,6 +373,7 @@ export async function prepareOrder(
       pricingTier: customer.pricingTier,
     },
     deliveryAddress: address,
+    deliveryLocationId,
     paymentMethod: args.paymentMethod ?? null,
     summary: {
       items: withBidon,
@@ -595,6 +606,7 @@ export async function createOrder(
   const sql = getSql();
   const summary = prepared.summary;
   const deliveryAddress = prepared.deliveryAddress!;
+  const deliveryLocationId = prepared.deliveryLocationId ?? null;
   const customerId = prepared.customer.id;
 
   // Dedupe entre sesiones (la idempotencia por clave no cubre re-dispatches).
@@ -621,12 +633,12 @@ export async function createOrder(
       const headerRows = await tx<{ id: string; order_number: string; status: string }[]>`
         INSERT INTO orders (
           id, organization_id, customer_id, conversation_id, order_number, status,
-          delivery_address, subtotal, delivery_fee, discount, total, customer_notes,
+          delivery_address, customer_location_id, subtotal, delivery_fee, discount, total, customer_notes,
           payment_method, source, idempotency_key, scheduled_delivery_date, created_by,
           created_at, updated_at
         ) VALUES (
           ${orderId}, ${tenant.organizationId}, ${customerId}, ${conversationId}, ${orderNumber}, ${ORDER_STATUS.NEW},
-          ${deliveryAddress}, ${summary.subtotal}, ${summary.deliveryFee}, ${summary.discount},
+          ${deliveryAddress}, ${deliveryLocationId}, ${summary.subtotal}, ${summary.deliveryFee}, ${summary.discount},
           ${summary.total}, ${args.customerNotes ?? null},
           ${args.paymentMethod ?? null}, 'whatsapp', ${args.idempotencyKey ?? null}, ${scheduledDeliveryDate}, ${createdBy},
           NOW(), NOW()
