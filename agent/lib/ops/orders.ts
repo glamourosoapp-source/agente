@@ -33,6 +33,8 @@ export const ORDER_STATUS = {
   PROCESSING: "processing",
   DELIVERED: "delivered",
   CANCELLED: "cancelled",
+  /** Eliminado desde el panel (no destructivo): para eve el pedido no existe. */
+  DELETED: "deleted",
 } as const;
 
 export interface OrderItemInput {
@@ -412,14 +414,21 @@ async function nextOrderNumber(
   // pedidos concurrentes del mismo dia contarian lo mismo y duplicarian folio.
   await sql`SELECT pg_advisory_xact_lock(hashtext(${organizationId}))`;
   const prefix = `ORD-${businessDateStamp()}`;
-  const rows = await sql<{ count: string }[]>`
-    SELECT COUNT(*)::int AS count
+  // MAX del consecutivo, no COUNT: la serie del dia puede tener huecos (un
+  // pedido borrado en el pasado) y con COUNT+1 el folio propuesto ya existiria,
+  // chocando contra el indice unico en cada intento. El sufijo es de ancho fijo
+  // con ceros, asi que el orden lexicografico es el numerico. Mismo criterio
+  // que OrderService._nextOrderNumber en el Back.
+  const rows = await sql<{ last: string | null }[]>`
+    SELECT MAX(order_number) AS last
     FROM orders
     WHERE organization_id = ${organizationId}
-      AND order_number ILIKE ${prefix + "%"}
+      AND order_number ILIKE ${prefix + "-%"}
   `;
-  const count = Number(rows[0]?.count ?? 0);
-  return `${prefix}-${String(count + 1).padStart(4, "0")}`;
+  const last = rows[0]?.last ?? null;
+  const lastSeq = last ? Number.parseInt(last.slice(prefix.length + 1), 10) : 0;
+  const next = (Number.isFinite(lastSeq) ? lastSeq : 0) + 1;
+  return `${prefix}-${String(next).padStart(4, "0")}`;
 }
 
 /** Carga un pedido ya persistido con la misma forma que un pedido recien creado. */
@@ -763,6 +772,7 @@ export async function getOrderStatus(
       FROM orders
       WHERE organization_id = ${tenant.organizationId}
         AND order_number = ${args.orderNumber}
+        AND status <> ${ORDER_STATUS.DELETED}
       LIMIT 1
     `;
   } else if (tenant.customerPhone) {
@@ -774,6 +784,7 @@ export async function getOrderStatus(
       WHERE o.organization_id = ${tenant.organizationId}
         AND c.organization_id = ${tenant.organizationId}
         AND c.phone_normalized = ${normalizePhoneForDb(tenant.customerPhone)}
+        AND o.status <> ${ORDER_STATUS.DELETED}
       ORDER BY o.created_at DESC
       LIMIT 1
     `;
@@ -833,6 +844,7 @@ export async function listOrders(
     WHERE o.organization_id = ${tenant.organizationId}
       AND c.organization_id = ${tenant.organizationId}
       AND c.phone_normalized = ${normalizePhoneForDb(tenant.customerPhone)}
+      AND o.status <> ${ORDER_STATUS.DELETED}
     GROUP BY o.id
     ORDER BY o.created_at DESC
     LIMIT ${limit}
@@ -873,6 +885,7 @@ export async function cancelOrder(
       AND c.organization_id = ${tenant.organizationId}
       AND c.phone_normalized = ${normalizePhoneForDb(tenant.customerPhone)}
       AND o.order_number = ${args.orderNumber}
+      AND o.status <> ${ORDER_STATUS.DELETED}
     LIMIT 1
   `;
   const order = rows[0];

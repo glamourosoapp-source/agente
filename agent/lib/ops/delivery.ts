@@ -1,4 +1,5 @@
 import { getSql } from "../db.js";
+import { ORDER_STATUS } from "./orders.js";
 import { businessTimezone } from "../time.js";
 import {
   computeScheduledDeliveryDate,
@@ -75,6 +76,7 @@ export async function scheduleDelivery(
     FROM orders
     WHERE organization_id = ${tenant.organizationId}
       AND order_number = ${args.orderNumber}
+      AND status <> ${ORDER_STATUS.DELETED}
     LIMIT 1
   `;
   const order = rows[0];
