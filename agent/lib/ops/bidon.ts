@@ -157,10 +157,9 @@ export function applyBidonLine(
 
   const existing = items.find((i) => i.productId === bidon.id);
 
-  const unitPrice =
-    pricingTier === "wholesale" && bidon.wholesalePrice && bidon.wholesalePrice > 0
-      ? bidon.wholesalePrice
-      : bidon.price;
+  const useWholesale =
+    pricingTier === "wholesale" && Boolean(bidon.wholesalePrice && bidon.wholesalePrice > 0);
+  const unitPrice = useWholesale ? bidon.wholesalePrice! : bidon.price;
   const quantity = Math.max(units, existing?.quantity ?? 0);
   const line: ResolvedOrderItem = {
     productId: bidon.id,
@@ -168,6 +167,7 @@ export function applyBidonLine(
     unit: bidon.unit,
     quantity,
     unitPrice,
+    priceTier: useWholesale ? "wholesale" : "retail",
     total: Math.round(unitPrice * quantity * 100) / 100,
     notes: "Bidón a cambio: si el cliente entrega los vacíos, el chofer no los cobra.",
   };

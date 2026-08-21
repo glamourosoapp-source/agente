@@ -50,6 +50,12 @@ export interface ResolvedOrderItem {
   unit: string;
   quantity: number;
   unitPrice: number;
+  /**
+   * Lista con la que se cobro la partida. eve no elige por fila: usa la del
+   * cliente, y cae a menudeo si el producto no tiene precio de mayoreo. El
+   * panel si permite elegirla fila por fila (order_items.price_tier).
+   */
+  priceTier: "retail" | "wholesale";
   total: number;
   notes: string | null;
 }
@@ -131,16 +137,20 @@ async function resolveItemByName(
   return { status: "resolved", product: top };
 }
 
-/** Precio unitario segun el tier del cliente (retail/wholesale). */
+/**
+ * Precio unitario y lista aplicada segun el tier del cliente. Pedir mayoreo
+ * sobre un producto sin precio de mayoreo cae a menudeo, y la partida queda
+ * marcada como menudeo: es lo que se cobra.
+ */
 function unitPriceFor(
   pricingTier: string,
   price: number,
   wholesalePrice: number | null,
-): number {
+): { unitPrice: number; priceTier: "retail" | "wholesale" } {
   if (pricingTier === "wholesale" && wholesalePrice && wholesalePrice > 0) {
-    return wholesalePrice;
+    return { unitPrice: wholesalePrice, priceTier: "wholesale" };
   }
-  return price;
+  return { unitPrice: price, priceTier: "retail" };
 }
 
 /**
@@ -218,13 +228,18 @@ export async function resolveOrderItems(
 
     if (carriesBidon(product)) bidonUnits += quantity;
 
-    const unitPrice = unitPriceFor(pricingTier, product.price, product.wholesalePrice);
+    const { unitPrice, priceTier } = unitPriceFor(
+      pricingTier,
+      product.price,
+      product.wholesalePrice,
+    );
     resolved.push({
       productId: product.id,
       productName: product.name,
       unit: product.unit,
       quantity,
       unitPrice,
+      priceTier,
       total: Math.round(unitPrice * quantity * 100) / 100,
       notes: item.notes ?? null,
     });
@@ -464,11 +479,12 @@ async function loadCreatedOrderById(
       unit: string;
       quantity: string | number;
       unit_price: string | number;
+      price_tier: string | null;
       total: string | number;
       notes: string | null;
     }[]
   >`
-    SELECT product_id, product_name, unit, quantity, unit_price, total, notes
+    SELECT product_id, product_name, unit, quantity, unit_price, price_tier, total, notes
     FROM order_items
     WHERE order_id = ${order.id}
     ORDER BY created_at ASC, product_name ASC
@@ -488,6 +504,7 @@ async function loadCreatedOrderById(
       unit: i.unit,
       quantity: Number(i.quantity ?? 0),
       unitPrice: Number(i.unit_price ?? 0),
+      priceTier: i.price_tier === "wholesale" ? "wholesale" : "retail",
       total: Number(i.total ?? 0),
       notes: i.notes,
     })),
@@ -659,11 +676,11 @@ export async function createOrder(
       for (const item of summary.items) {
         await tx`
           INSERT INTO order_items (
-            id, order_id, product_id, product_name, unit, quantity, unit_price, total, notes,
+            id, order_id, product_id, product_name, unit, quantity, unit_price, price_tier, total, notes,
             created_at, updated_at
           ) VALUES (
             ${randomUUID()}, ${header.id}, ${item.productId}, ${item.productName}, ${item.unit},
-            ${item.quantity}, ${item.unitPrice}, ${item.total}, ${item.notes},
+            ${item.quantity}, ${item.unitPrice}, ${item.priceTier}, ${item.total}, ${item.notes},
             NOW(), NOW()
           )
         `;

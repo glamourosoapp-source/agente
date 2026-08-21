@@ -17,6 +17,7 @@ function item(partial: Partial<ResolvedOrderItem> = {}): ResolvedOrderItem {
     unit: "litro",
     quantity: 2,
     unitPrice: 190,
+    priceTier: "retail",
     total: 380,
     notes: null,
     ...partial,
@@ -73,6 +74,7 @@ describe("applyBidonLine", () => {
       unit: "bidón",
       quantity: 2,
       unitPrice: 25,
+      priceTier: "retail",
       total: 50,
       notes: null,
     };
@@ -88,6 +90,7 @@ describe("applyBidonLine", () => {
       unit: "bidón",
       quantity: 5,
       unitPrice: 25,
+      priceTier: "retail",
       total: 125,
       notes: null,
     };
@@ -110,6 +113,7 @@ describe("applyBidonLine sin envases de 20 L", () => {
       unit: "bidón",
       quantity: 1,
       unitPrice: 25,
+      priceTier: "retail",
       total: 25,
       notes: null,
     };
